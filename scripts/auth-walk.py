@@ -277,12 +277,15 @@ def clear_clip(copy_cmd, paste_cmd, token: str) -> bool:
     `--clear` is not enough: clipboard managers (Klipper's "prevent empty
     clipboard", and the like) put the last entry straight back, so the
     token would survive. Overwriting sticks. True if the token is gone."""
+    # wl-copy (and xclip) fork a child that keeps serving the selection
+    # until something replaces it, and that child inherits our pipes — so
+    # never capture its output, or this call blocks for as long as the
+    # marker stays on the clipboard.
     try:
-        subprocess.run(copy_cmd, input=CLEARED, text=True, capture_output=True, timeout=5)
+        subprocess.run(copy_cmd, input=CLEARED, text=True, timeout=5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         return False
-    # The compositor hands the new selection over asynchronously; give it
-    # a moment before concluding the token survived.
     for _ in range(8):
         time.sleep(0.25)
         if read_clip(paste_cmd) != token:
