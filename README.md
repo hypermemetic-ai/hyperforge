@@ -26,6 +26,11 @@ synapse -P 44104 --json lforge-v5 hyperforge orgs bootstrap \
 # Materialize a checkout for everything tracked
 synapse -P 44104 --json lforge-v5 hyperforge workspaces from_org \
     --org <my-org> --target_path ~/code/<my-org>
+
+# Collect every token hyperforge still needs (forges + registries): opens
+# each provider's token page, waits for the token on your clipboard,
+# validates it, stores it via `secrets set`, clears the clipboard.
+scripts/auth-walk.py            # --dry-run lists; --only cargo/token --force redoes one
 ```
 
 That's the whole flow. See `docs/v5/getting-started.md` for the long version.
