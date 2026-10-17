@@ -30,6 +30,12 @@ struct Args {
     /// missing.
     #[arg(long)]
     config_dir: Option<PathBuf>,
+
+    /// State directory: pipeline runs, attempts, outputs and logs
+    /// (HYPERFORGE-22). Defaults to `~/.local/state/hyperforge/`
+    /// (`$XDG_STATE_HOME/hyperforge`). Created if missing.
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
 }
 
 fn default_config_dir() -> PathBuf {
@@ -38,6 +44,12 @@ fn default_config_dir() -> PathBuf {
             || PathBuf::from("/tmp/hyperforge"),
             |c| c.join("hyperforge"),
         )
+}
+
+fn default_state_dir(config_dir: &std::path::Path) -> PathBuf {
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .map_or_else(|| config_dir.join("state"), |d| d.join("hyperforge"))
 }
 
 fn expand_tilde(p: &std::path::Path) -> PathBuf {
@@ -101,15 +113,27 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let state_dir = args
+        .state_dir
+        .map_or_else(|| default_state_dir(&config_dir), |p| expand_tilde(&p));
+    if let Err(e) = std::fs::create_dir_all(&state_dir) {
+        eprintln!(
+            "hyperforge-v5: failed to create state dir {}: {e}",
+            state_dir.display()
+        );
+        std::process::exit(1);
+    }
+
     // Build the activation tree.
     let lforge = Arc::new(
         DynamicHub::new("lforge-v5")
-            .register(HyperforgeHub::new(config_dir.clone())),
+            .register(HyperforgeHub::with_state_dir(config_dir.clone(), &state_dir)),
     );
 
     tracing::info!(
         port = args.port,
         config_dir = %config_dir.display(),
+        state_dir = %state_dir.display(),
         "hyperforge-v5 starting"
     );
 
