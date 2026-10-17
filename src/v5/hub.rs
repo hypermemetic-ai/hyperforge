@@ -16,6 +16,7 @@ use futures::Stream;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::v5::ci::{CiHub, CiStore};
 use crate::v5::orgs::OrgsHub;
 use crate::v5::repos::ReposHub;
 use crate::v5::secrets::{SecretRef, SecretResolver, YamlSecretStore};
@@ -133,14 +134,29 @@ pub struct HyperforgeHub {
 pub struct HubState {
     /// Absolute, expanded config directory.
     pub config_dir: PathBuf,
+    /// HYPERFORGE-22: pipeline runs, kept under the state dir. One store
+    /// per hub, so running stages outlive the call that started them.
+    pub ci: Arc<CiStore>,
 }
 
 impl HyperforgeHub {
-    /// Construct a hub rooted at the given config directory.
+    /// Construct a hub rooted at the given config directory. Pipeline runs
+    /// are kept under `<config_dir>/state`; the daemon passes the real state
+    /// dir through [`HyperforgeHub::with_state_dir`].
     #[must_use]
     pub fn new(config_dir: PathBuf) -> Self {
+        let state_dir = config_dir.join("state");
+        Self::with_state_dir(config_dir, &state_dir)
+    }
+
+    /// Construct a hub with an explicit state dir (HYPERFORGE-22: where
+    /// pipeline runs, attempts, outputs and logs are kept). Opening it fails
+    /// every stage a previous process left running.
+    #[must_use]
+    pub fn with_state_dir(config_dir: PathBuf, state_dir: &std::path::Path) -> Self {
+        let ci = Arc::new(CiStore::open(state_dir));
         Self {
-            state: Arc::new(HubState { config_dir }),
+            state: Arc::new(HubState { config_dir, ci }),
         }
     }
 }
@@ -180,6 +196,13 @@ impl HyperforgeHub {
     #[plexus_macros::child]
     fn build(&self) -> crate::v5::build_hub::BuildHub {
         crate::v5::build_hub::BuildHub::new(self.state.config_dir.clone())
+    }
+
+    /// CI namespace — HYPERFORGE-22. Pipelines declared in repos; each
+    /// registered pipeline is a dynamic child of `ci`.
+    #[plexus_macros::child]
+    fn ci(&self) -> CiHub {
+        CiHub::new(self.state.config_dir.clone(), self.state.ci.clone())
     }
 
     /// Return daemon version and config directory.

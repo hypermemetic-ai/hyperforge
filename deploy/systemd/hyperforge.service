@@ -1,0 +1,30 @@
+# hyperforge as a systemd --user service (HYPERFORGE-22).
+#
+# Runs the v5 daemon (`lforge-v5`) on 44104 from ~/.local/bin. No
+# --config-dir / --state-dir: the service resolves them exactly as a manual
+# run does (~/.config/hyperforge, ~/.local/state/hyperforge).
+#
+# Install (README "Run as a service"):
+#   install -Dm644 deploy/systemd/hyperforge.service ~/.config/systemd/user/hyperforge.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hyperforge.service
+[Unit]
+Description=hyperforge v5 daemon (lforge-v5 on 44104)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hyperforge-v5 --port 44104
+Restart=on-failure
+RestartSec=5
+# Stages are spawned in process groups of their own; stopping the service
+# stops them too (a stage interrupted this way is `failed` with
+# "hyperforge restarted" when the daemon comes back).
+KillMode=control-group
+# Pipelines' stages run commands like a login shell would find them.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/.ghcup/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RUST_LOG=warn,hyperforge=info
+
+[Install]
+WantedBy=default.target

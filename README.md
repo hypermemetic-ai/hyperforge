@@ -53,7 +53,9 @@ hyperforge (port 44104)
 │  ├─ ReposHub     → repos.*       ← clone, fetch, pull, status, register, sync, …
 │  ├─ WorkspacesHub → workspaces.* ← from_org, status, checkout, commit, tag, diff
 │  ├─ SecretsHub   → secrets.*     ← set, list_refs, delete
-│  └─ BuildHub     → build.*       ← unify, release, dist_init, run, exec
+│  ├─ BuildHub     → build.*       ← unify, release, dist_init, run, exec
+│  └─ CiHub        → ci.*          ← add, remove, pipelines
+│     └─ PipelineHub → ci.<name>.* ← describe, start, trigger, runs, get, watch, log, cancel
 ├─ ops::*                          ← typed wrappers (state, git, external_auth)
 └─ adapters::*                     ← ForgePort: github, codeberg, gitlab
 ```
@@ -89,6 +91,76 @@ synapse … repos register --target_path ~/code/some-orphan
 synapse … build release --org <org> --name <repo> --bump patch
 ```
 
+## Pipelines (`ci`)
+
+A repo declares pipelines in `.hyperforge/pipelines.toml`; each registered
+pipeline is a dynamic child of `ci` (HYPERFORGE-22). The file is read at
+every call, so an edit is live without a restart.
+
+```toml
+[[pipeline]]
+name = "menger-app"
+env = { IMAGE_STORE = "local" }     # pipeline-wide; a stage's env overrides it
+
+[[pipeline.stage]]
+name = "build"
+run = "deploy/pipeline image"      # sh -c, in the repo's directory
+trigger = "auto"                   # runs when the run starts
+outputs = ["image", "release"]     # key=value lines the stage writes to $HF_OUTPUTS
+
+[[pipeline.stage]]
+name = "deploy-local"
+needs = ["build"]                  # an earlier stage; its outputs arrive as $IMAGE and $HF_BUILD_IMAGE
+trigger = "manual"                 # the default
+run = "deploy/pipeline local --image \"$IMAGE\""
+timeout_minutes = 30
+```
+
+```bash
+synapse -P 44104 lforge-v5 hyperforge ci add --path ~/code/menger      # register a repo's pipelines
+synapse -P 44104 lforge-v5 hyperforge ci pipelines                     # every pipeline, its repo, its stages
+synapse -P 44104 lforge-v5 hyperforge ci menger-app describe
+synapse -P 44104 lforge-v5 hyperforge ci menger-app start              # a new run; its auto stages run
+synapse -P 44104 lforge-v5 hyperforge ci menger-app trigger --run 7 --stage deploy-local
+synapse -P 44104 lforge-v5 hyperforge ci menger-app runs --limit 20
+synapse -P 44104 lforge-v5 hyperforge ci menger-app get --run 7
+synapse -P 44104 lforge-v5 hyperforge ci menger-app watch --run 7      # --follow true stays open
+synapse -P 44104 lforge-v5 hyperforge ci menger-app log --run 7 --stage build
+synapse -P 44104 lforge-v5 hyperforge ci menger-app cancel --run 7 --stage deploy-local
+synapse -P 44104 lforge-v5 hyperforge ci remove --path ~/code/menger
+```
+
+A stage's environment holds the pipeline's and the stage's `env`,
+`HF_PIPELINE`, `HF_RUN`, `HF_STAGE`, `HF_ATTEMPT`, `HF_OUTPUTS` (the file to
+write outputs to) and each needed stage's outputs. Exit 0 with every declared
+output written is `succeeded`; a non-zero exit, a missing output or a timeout
+is `failed`; `cancel` is `canceled` and stops the stage's whole process group.
+Triggering a stage again is a new attempt. Where an artifact lives is the
+stage's business (its `env`), never hyperforge's.
+
+The registered repos are kept in `~/.config/hyperforge/ci.yaml`; runs,
+attempts, outputs and logs in `~/.local/state/hyperforge/ci/` (`--state-dir`).
+A stage running when hyperforge stops is `failed` ("hyperforge restarted")
+when it comes back.
+
+## Run as a service
+
+`deploy/systemd/hyperforge.service` runs `~/.local/bin/hyperforge-v5` on
+44104 under `systemd --user`, with the same config and state dirs as a
+manual run:
+
+```bash
+cargo build --release --bin hyperforge-v5
+install -m755 "${CARGO_TARGET_DIR:-target}/release/hyperforge-v5" ~/.local/bin/hyperforge-v5
+install -Dm644 deploy/systemd/hyperforge.service ~/.config/systemd/user/hyperforge.service
+systemctl --user daemon-reload
+systemctl --user enable --now hyperforge.service
+synapse -P 44104 lforge-v5 hyperforge status                          # answers
+journalctl --user -u hyperforge -f                                    # its log
+```
+
+After installing a new binary: `systemctl --user restart hyperforge`.
+
 ## Config layout
 
 ```
@@ -96,7 +168,8 @@ synapse … build release --org <org> --name <repo> --bump patch
 ├── config.yaml                    # provider_map, default_workspace
 ├── secrets.yaml                   # secrets://… resolved here (YAML-backed)
 ├── orgs/<org>.yaml                # one file per org: provider + credentials + repos
-└── workspaces/<name>.yaml         # one file per workspace: name + path + members
+├── workspaces/<name>.yaml         # one file per workspace: name + path + members
+└── ci.yaml                        # repos whose .hyperforge/pipelines.toml is registered
 ```
 
 Per-repo identity lives in `<repo>/.hyperforge/config.toml`. Distribution config lives in `<repo>/.hyperforge/dist.toml`.

@@ -7,6 +7,7 @@
 pub mod adapters;
 pub mod build;
 pub mod build_hub;
+pub mod ci;
 pub mod config;
 pub mod hub;
 pub mod ops;
