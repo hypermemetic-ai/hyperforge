@@ -137,6 +137,8 @@ pub struct HubState {
     /// HYPERFORGE-22: pipeline runs, kept under the state dir. One store
     /// per hub, so running stages outlive the call that started them.
     pub ci: Arc<CiStore>,
+    /// HYPERFORGE-23: where `build publish` keeps its logs (`publish/`).
+    pub state_dir: PathBuf,
 }
 
 impl HyperforgeHub {
@@ -156,7 +158,11 @@ impl HyperforgeHub {
     pub fn with_state_dir(config_dir: PathBuf, state_dir: &std::path::Path) -> Self {
         let ci = Arc::new(CiStore::open(state_dir));
         Self {
-            state: Arc::new(HubState { config_dir, ci }),
+            state: Arc::new(HubState {
+                config_dir,
+                ci,
+                state_dir: state_dir.to_path_buf(),
+            }),
         }
     }
 }
@@ -195,7 +201,10 @@ impl HyperforgeHub {
     /// Build namespace — V5PARITY-9/10/11. Manifest, release, dist, exec.
     #[plexus_macros::child]
     fn build(&self) -> crate::v5::build_hub::BuildHub {
-        crate::v5::build_hub::BuildHub::new(self.state.config_dir.clone())
+        crate::v5::build_hub::BuildHub::with_state_dir(
+            self.state.config_dir.clone(),
+            self.state.state_dir.clone(),
+        )
     }
 
     /// CI namespace — HYPERFORGE-22. Pipelines declared in repos; each

@@ -43,3 +43,20 @@ pub fn run_shell(cwd: &Path, cmd: &str) -> Result<ExecResult, ExecError> {
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
 }
+
+/// HYPERFORGE-23: [`run_shell`] with variables set in the child's
+/// environment — how a secret reaches a command without appearing in its
+/// command line.
+pub fn run_shell_env(cwd: &Path, cmd: &str, envs: &[(&str, String)]) -> Result<ExecResult, ExecError> {
+    let mut c = Command::new("sh");
+    c.current_dir(cwd).arg("-c").arg(cmd);
+    for (k, v) in envs {
+        c.env(k, v);
+    }
+    let out = c.output().map_err(|e| ExecError::Io(e.to_string()))?;
+    Ok(ExecResult {
+        exit_code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}

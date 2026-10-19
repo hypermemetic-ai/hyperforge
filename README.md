@@ -143,6 +143,63 @@ attempts, outputs and logs in `~/.local/state/hyperforge/ci/` (`--state-dir`).
 A stage running when hyperforge stops is `failed` ("hyperforge restarted")
 when it comes back.
 
+## Releasing a crate chain (`build`)
+
+A chain of crates spread over several repos — members of cargo workspaces
+too — is released from a workspace (HYPERFORGE-23). `--include` names crates
+(globs on crate names), never repos:
+
+```bash
+W="synapse -P 44104 lforge-v5 hyperforge build"
+$W package_diff --name hypermemetic --include 'plexus-*'        # each crate against crates.io, in dependency order
+$W bump --name hypermemetic --include plexus-core --include plexus-transport --bump patch --dry_run true
+$W bump --name hypermemetic --include plexus-core --include plexus-transport --bump patch
+$W publish --name hypermemetic --include menger                 # dry run of the whole chain menger needs
+$W publish --name hypermemetic --include menger --execute true  # for real
+```
+
+- `package_diff` says each crate's `status`: `unpublished`, `ahead` (a
+  version crates.io lacks), `published` (its source unchanged since),
+  `drifted` (published, but the files differ from the published `.crate` —
+  bump it), `behind`, `yanked`.
+- `bump` sets each included crate's version and moves every dependent's
+  `version =` requirement on it that matched the old version: inside the
+  bumped set to the new version (`0.6` → `0.6.1`, the operator kept);
+  elsewhere only a path dependency, and only when it would no longer match
+  (a patch leaves `0.6` alone; a registry pin on an older line, `0.5`, is
+  never touched). It refuses to write over an
+  uncommitted manifest, refreshes each repo's `Cargo.lock`, and commits each
+  repo once (`--commit false` leaves the edits).
+- `publish` takes what the included crates need first (`--closure false`
+  takes only them), skips a version crates.io holds, and groups the rest in
+  dependency order — one `cargo publish -p … -p …` per cargo workspace. It
+  dry-runs **every** group first, each against the others' checkouts (a
+  `[patch.crates-io]` cargo config), and publishes nothing unless all pass;
+  `--execute true` then publishes group by group, stops at the first failure
+  naming what is and is not published, and tags each crate
+  `<crate>-v<version>` (local tags). An execute refuses uncommitted changes.
+  The token is `secrets://cargo/token` (else cargo's own login), handed to
+  cargo in its environment, never on a command line. Logs:
+  `~/.local/state/hyperforge/publish/<time>/`.
+- A repo whose crates need their own publish step declares it in
+  `.hyperforge/config.toml`; hyperforge runs it (`sh -c`, in the repo) in
+  place of `cargo publish` with `HF_PUBLISH_MODE` (`dry-run` / `execute`),
+  `HF_PUBLISH_CRATES`, `HF_CARGO_CONFIG` (the patch, for a dry run — pass it
+  to cargo as `--config "$HF_CARGO_CONFIG"`) and, on execute,
+  `CARGO_REGISTRY_TOKEN`:
+
+```toml
+[publish]
+crates = ["plexus-shell", "menger-tickets-api", "plexus-login", "menger"]
+dry_run = "scripts/publish.sh dry-run"
+execute = "scripts/publish.sh publish"
+```
+
+`HYPERFORGE_CRATES_INDEX` / `HYPERFORGE_CRATES_DL` point the registry reads
+elsewhere (a `file://` directory serves as a registry on disk; the tests use
+one). The one-repo forms — `bump --org --name`, `publish --org --name
+--channel`, `package_diff --from_ref --to_ref` — are unchanged.
+
 ## Run as a service
 
 `deploy/systemd/hyperforge.service` runs `~/.local/bin/hyperforge-v5` on

@@ -10,3 +10,6 @@ pub mod diff;
 pub mod release;
 pub mod exec;
 pub mod dist;
+// HYPERFORGE-23: a crate chain across repos — diff, bump, publish.
+pub mod chain;
+pub mod chain_ops;
