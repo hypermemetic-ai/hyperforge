@@ -105,6 +105,89 @@ pub enum BuildEvent {
         errored: u32,
     },
 
+    // HYPERFORGE-23 crate-chain events.
+    /// Something the chain run noticed (a crate added by the closure, a
+    /// lockfile not refreshed, …).
+    ChainNote { message: String },
+    /// `package_diff`: one crate against the registry. `status`:
+    /// `unpublished` · `ahead` (a version crates.io lacks) · `published`
+    /// (and its source unchanged since) · `drifted` (published, but the
+    /// source changed since — bump it) · `behind` · `yanked`.
+    CrateState {
+        name: String,
+        version: String,
+        repo: String,
+        path: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latest: Option<String>,
+        changed_count: u32,
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        changed: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        published_from: Option<String>,
+        publish: bool,
+    },
+    CrateBumped {
+        name: String,
+        repo: String,
+        old: String,
+        new: String,
+        dry_run: bool,
+    },
+    RequirementBumped {
+        manifest: String,
+        repo: String,
+        key: String,
+        package: String,
+        table: String,
+        old: String,
+        new: String,
+        dry_run: bool,
+    },
+    BumpCommitted {
+        repo: String,
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+        files: Vec<String>,
+    },
+    /// `publish`: the plan, one per crate in dependency order.
+    PublishPlanned {
+        position: u32,
+        group: u32,
+        name: String,
+        version: String,
+        repo: String,
+        /// `publish` | `skip`
+        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// `publish`: a group's dry run or publish — `started`, then `ok` / `failed`.
+    PublishGroup {
+        group: u32,
+        repo: String,
+        crates: Vec<String>,
+        /// `dry_run` | `execute`
+        phase: String,
+        state: String,
+        step: String,
+        log: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tail: Option<String>,
+    },
+    CrateTagged { name: String, repo: String, tag: String },
+    PublishSummary {
+        execute: bool,
+        planned: u32,
+        skipped: u32,
+        verified: u32,
+        published: Vec<String>,
+        failed: Vec<String>,
+        not_published: Vec<String>,
+    },
+
     Error {
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<String>,
@@ -115,13 +198,52 @@ pub enum BuildEvent {
 #[derive(Clone)]
 pub struct BuildHub {
     config_dir: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl BuildHub {
+    /// Logs of `publish` go under `<config_dir>/state/publish`.
     #[must_use]
-    pub const fn new(config_dir: PathBuf) -> Self {
-        Self { config_dir }
+    pub fn new(config_dir: PathBuf) -> Self {
+        let state_dir = config_dir.join("state");
+        Self { config_dir, state_dir }
     }
+
+    /// HYPERFORGE-23: logs of `publish` go under `<state_dir>/publish`.
+    #[must_use]
+    pub const fn with_state_dir(config_dir: PathBuf, state_dir: PathBuf) -> Self {
+        Self { config_dir, state_dir }
+    }
+}
+
+/// Stream the events a chain task sends.
+fn from_task<F, Fut>(f: F) -> impl Stream<Item = BuildEvent> + Send + 'static
+where
+    F: FnOnce(tokio::sync::mpsc::UnboundedSender<BuildEvent>) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(f(tx));
+    stream! {
+        while let Some(ev) = rx.recv().await {
+            yield ev;
+        }
+    }
+}
+
+/// A workspace's members as `(org/name, checkout)`.
+fn chain_repos(config_dir: &std::path::Path, name: &str) -> Result<Vec<(String, PathBuf)>, String> {
+    Ok(workspace_members(config_dir, name)?
+        .into_iter()
+        .map(|(r, d)| (format!("{}/{}", r.org, r.name), d))
+        .collect())
+}
+
+fn resolve_cargo_token(config_dir: &std::path::Path) -> Option<String> {
+    use crate::v5::secrets::SecretResolver as _;
+    let resolver = crate::v5::secrets::YamlSecretStore::new(config_dir);
+    let parsed = crate::v5::secrets::SecretRef::parse("secrets://cargo/token").ok()?;
+    resolver.resolve(&parsed).ok()
 }
 
 fn err<S: Into<String>>(code: S, msg: impl Into<String>) -> BuildEvent {
@@ -306,16 +428,35 @@ impl BuildHub {
 
     #[plexus_macros::method(params(
         name = "Workspace name",
-        from_ref = "Git ref to diff from",
-        to_ref = "Git ref to diff to"
+        from_ref = "Git ref to diff from (with to_ref: the manifests' diff between two refs)",
+        to_ref = "Git ref to diff to",
+        include = "Without refs: crates to compare with crates.io (globs on crate names; default all)",
+        exclude = "Crates to leave out (globs)"
     ))]
     pub async fn package_diff(
         &self,
         name: String,
-        from_ref: String,
-        to_ref: String,
-    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        from_ref: Option<String>,
+        to_ref: Option<String>,
+        include: Option<Vec<String>>,
+        exclude: Option<Vec<String>>,
+    ) -> futures::stream::BoxStream<'static, BuildEvent> {
+        use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
+        let (from_ref, to_ref) = match (from_ref, to_ref) {
+            (Some(f), Some(t)) => (f, t),
+            (None, None) => {
+                // HYPERFORGE-23: each crate's version against crates.io.
+                let repos = match chain_repos(&config_dir, &name) {
+                    Ok(r) => r,
+                    Err(e) => return futures::stream::once(async move { err("not_found", e) }).boxed(),
+                };
+                return from_task(move |tx| crate::v5::build::chain_ops::package_diff(
+                    tx, repos, include.unwrap_or_default(), exclude.unwrap_or_default(),
+                )).boxed();
+            }
+            _ => return futures::stream::once(async { err("validation", "from_ref and to_ref go together") }).boxed(),
+        };
         stream! {
             let members = match workspace_members(&config_dir, &name) {
                 Ok(v) => v, Err(e) => { yield err("not_found", e); return; }
@@ -343,7 +484,7 @@ impl BuildHub {
                 }
                 let _ = r;
             }
-        }
+        }.boxed()
     }
 
     // ==================================================================
@@ -351,19 +492,52 @@ impl BuildHub {
     // ==================================================================
 
     #[plexus_macros::method(params(
-        org = "Org name",
-        name = "Repo name",
+        org = "Org name (one repo's root Cargo.toml; leave out with include)",
+        name = "Repo name, or with include the workspace name",
         bump = "major | minor | patch (ignored if --to is set)",
-        to = "Exact target version"
+        to = "Exact target version",
+        include = "Crates to bump across the workspace (globs on crate names): members of cargo workspaces too, every dependent's version requirement carried, one commit per repo",
+        exclude = "Crates to leave out (globs)",
+        closure = "Also bump every chain crate the included ones need (default false)",
+        dry_run = "Say what would change; write nothing (default false)",
+        commit = "Commit each repo's change (default true)"
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn bump(
         &self,
-        org: String,
+        org: Option<String>,
         name: String,
         bump: Option<String>,
         to: Option<String>,
-    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        include: Option<Vec<String>>,
+        exclude: Option<Vec<String>>,
+        closure: Option<bool>,
+        dry_run: Option<bool>,
+        commit: Option<bool>,
+    ) -> futures::stream::BoxStream<'static, BuildEvent> {
+        use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
+        let kind_or_target = to.clone().or_else(|| bump.clone()).unwrap_or_else(|| "patch".into());
+        if let Some(include) = include {
+            // HYPERFORGE-23: a set of crates across the workspace `name`.
+            let repos = match chain_repos(&config_dir, &name) {
+                Ok(r) => r,
+                Err(e) => return futures::stream::once(async move { err("not_found", e) }).boxed(),
+            };
+            let args = crate::v5::build::chain_ops::BumpArgs {
+                repos,
+                include,
+                exclude: exclude.unwrap_or_default(),
+                closure: closure.unwrap_or(false),
+                kind_or_target,
+                dry_run: dry_run.unwrap_or(false),
+                commit: commit.unwrap_or(true),
+            };
+            return from_task(move |tx| crate::v5::build::chain_ops::bump(tx, args)).boxed();
+        }
+        let Some(org) = org else {
+            return futures::stream::once(async { err("validation", "org is required (or include, for a set of crates)") }).boxed();
+        };
         stream! {
             let dir = match resolve_single_repo_dir(&config_dir, &org, &name) {
                 Ok(d) => d, Err(e) => { yield err("not_found", e); return; }
@@ -396,21 +570,50 @@ impl BuildHub {
                 reference: crate::v5::repos::RepoRefWire { org, name },
                 old, new,
             };
-        }
+        }.boxed()
     }
 
     #[plexus_macros::method(params(
-        org = "Org name",
-        name = "Repo name",
-        channel = "crates.io | npm | pypi"
+        org = "Org name (one repo, as before; leave out to publish a crate chain)",
+        name = "Repo name, or without org the workspace name",
+        channel = "crates.io | npm | pypi (one repo only)",
+        include = "Crates to publish (globs on crate names); with closure, every chain crate they need comes first",
+        exclude = "Crates to leave out (globs)",
+        closure = "Publish what the included crates need too, in dependency order (default true)",
+        execute = "Publish for real; without it every group's dry run runs and nothing is published (default false)"
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn publish(
         &self,
-        org: String,
+        org: Option<String>,
         name: String,
         channel: Option<String>,
-    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        include: Option<Vec<String>>,
+        exclude: Option<Vec<String>>,
+        closure: Option<bool>,
+        execute: Option<bool>,
+    ) -> futures::stream::BoxStream<'static, BuildEvent> {
+        use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
+        let Some(org) = org else {
+            // HYPERFORGE-23: a crate chain over the workspace `name`.
+            let repos = match chain_repos(&config_dir, &name) {
+                Ok(r) => r,
+                Err(e) => return futures::stream::once(async move { err("not_found", e) }).boxed(),
+            };
+            let execute = execute.unwrap_or(false);
+            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            let args = crate::v5::build::chain_ops::PublishArgs {
+                repos,
+                include: include.unwrap_or_default(),
+                exclude: exclude.unwrap_or_default(),
+                closure: closure.unwrap_or(true),
+                execute,
+                token: if execute { resolve_cargo_token(&config_dir) } else { None },
+                log_dir: self.state_dir.join("publish").join(stamp),
+            };
+            return from_task(move |tx| crate::v5::build::chain_ops::publish(tx, args)).boxed();
+        };
         stream! {
             let dir = match resolve_single_repo_dir(&config_dir, &org, &name) {
                 Ok(d) => d, Err(e) => { yield err("not_found", e); return; }
@@ -432,13 +635,15 @@ impl BuildHub {
                 Ok(t) => t,
                 Err(_) => { yield err("missing_token", format!("no secret at secrets://{secret_key}")); return; }
             };
-            let publish_cmd = match ch.as_str() {
-                "crates.io" => format!("CARGO_REGISTRY_TOKEN={} cargo publish --allow-dirty", shell_escape(&token)),
-                "npm" => format!("NPM_TOKEN={} npm publish", shell_escape(&token)),
-                "pypi" => format!("TWINE_USERNAME=__token__ TWINE_PASSWORD={} twine upload dist/*", shell_escape(&token)),
+            // HYPERFORGE-23: the token reaches the child through its
+            // environment, never a shell string (the process table).
+            let (publish_cmd, envs): (&str, Vec<(&str, String)>) = match ch.as_str() {
+                "crates.io" => ("cargo publish --allow-dirty", vec![("CARGO_REGISTRY_TOKEN", token)]),
+                "npm" => ("npm publish", vec![("NPM_TOKEN", token)]),
+                "pypi" => ("twine upload dist/*", vec![("TWINE_USERNAME", "__token__".into()), ("TWINE_PASSWORD", token)]),
                 _ => unreachable!(),
             };
-            let out = match exec::run_shell(&dir, &publish_cmd) {
+            let out = match exec::run_shell_env(&dir, publish_cmd, &envs) {
                 Ok(r) => r, Err(e) => { yield err(e.code(), e.to_string()); return; }
             };
             if out.exit_code == 0 {
@@ -449,7 +654,7 @@ impl BuildHub {
             } else {
                 yield err("publish_failed", format!("exit {}: {}", out.exit_code, out.stderr));
             }
-        }
+        }.boxed()
     }
 
     #[plexus_macros::method(params(
@@ -774,11 +979,6 @@ impl BuildHub {
     }
 }
 
-
-/// Minimal shell-escape: single-quote the value; escape embedded quotes.
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
 
 // Silence unused-import warnings if OrgName is imported for future refs.
 #[allow(dead_code)]
