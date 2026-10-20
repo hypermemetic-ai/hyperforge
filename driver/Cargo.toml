@@ -1,0 +1,55 @@
+[package]
+name = "hyperforge-driver"
+version = "0.1.0"
+edition = "2021"
+description = "The deploy-driver contract: one bodiless DriverActivation, from which the trait, the server and the client are emitted"
+license = "MIT"
+publish = false
+
+# HYPERFORGE-9. The contract is a bodiless `impl DriverActivation` (MACRO-13):
+# `trait Driver` and `DriverClient<T>` in every build; `DriverActivation<D>`
+# and `Driver::server()` — the server half — behind `server`, which the macro
+# gates on without being told. `--no-default-features` is the wasm-safe build:
+# the types, the trait and the client, no plexus-core in the tree.
+#
+# The plexus 0.6 line by sibling path: MACRO-13's trait form is in
+# plexus-macros 0.6.1, which crates.io does not have yet (it holds 0.6.0).
+[features]
+default = ["server"]
+server = [
+    "dep:plexus-core",
+    "dep:async-trait",
+    "dep:jsonrpsee",
+    "dep:tokio",
+    "dep:uuid",
+    "dep:serde_json",
+]
+
+[dependencies]
+plexus-macros = { path = "../../plexus-macros", version = "0.6.1" }
+plexus-client = { path = "../../plexus-macros/plexus-client", version = "0.6.1" }
+serde = { version = "1", features = ["derive"] }
+futures = "0.3"
+schemars = { version = "1.1", features = ["derive"] }
+
+plexus-core = { path = "../../plexus-core", version = "0.6.1", optional = true }
+async-trait = { version = "0.1", optional = true }
+jsonrpsee = { version = "0.26", features = ["server", "macros"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+uuid = { version = "1", features = ["v4", "v5"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+plexus-core = { path = "../../plexus-core", version = "0.6.1" }
+async-stream = "0.3"
+plexus-client = { path = "../../plexus-macros/plexus-client", version = "0.6.1", features = ["ws-native"] }
+plexus-transport = { path = "../../plexus-transport", version = "0.5.1" }
+
+[[example]]
+name = "toy_hub"
+required-features = ["server"]
+
+[lints.rust]
+unsafe_code = "forbid"
