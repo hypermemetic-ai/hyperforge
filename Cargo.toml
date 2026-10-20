@@ -5,6 +5,11 @@ edition = "2021"
 description = "Multi-forge repository management"
 license = "MIT"
 
+# HYPERFORGE-9: the deploy-driver contract is a crate of its own, a member
+# of this workspace (HYPERFORGE-7 `contract`).
+[workspace]
+members = [".", "driver"]
+
 [lib]
 name = "hyperforge"
 path = "src/lib.rs"

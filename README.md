@@ -200,6 +200,25 @@ elsewhere (a `file://` directory serves as a registry on disk; the tests use
 one). The one-repo forms — `bump --org --name`, `publish --org --name
 --channel`, `package_diff --from_ref --to_ref` — are unchanged.
 
+## The deploy-driver contract (`driver/`)
+
+`hyperforge-driver` (HYPERFORGE-9) is the contract every deploy driver
+implements and every caller uses: one bodiless `impl DriverActivation`
+(`describe` · `trigger` · `watch` · `log` · `cancel` · `approve`), from which
+plexus-macros emits `trait Driver` (a built-in driver implements it),
+`DriverActivation<D>` / `Driver::server()` (serves any driver on a hub;
+`server` feature) and `DriverClient<T>: Driver` (a plugin over a transport).
+`--no-default-features` is the wasm-safe build. A run ends in DEPLOY-10's
+`Record` unless the system records itself (`Capabilities.records`). It takes
+the plexus 0.6 line by sibling path (`../plexus-core`, `../plexus-macros`)
+until plexus-macros 0.6.1 is published.
+
+```bash
+cargo test -p hyperforge-driver
+cargo run -p hyperforge-driver --example toy_hub -- 44190   # a scripted driver, for synapse -s / synapse-cc
+synapse -P 44190 -s toy driver
+```
+
 ## Run as a service
 
 `deploy/systemd/hyperforge.service` runs `~/.local/bin/hyperforge-v5` on
