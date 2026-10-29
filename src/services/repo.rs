@@ -1,4 +1,4 @@
-//! `RepoHub` - Single-repo operations and registry CRUD
+//! `RepoService` - Single-repo operations and registry CRUD
 
 use async_stream::stream;
 use futures::Stream;
@@ -12,10 +12,10 @@ use crate::commands::materialize::{materialize, MaterializeOpts, MaterializeRepo
 use crate::commands::{push, status};
 use crate::config::HyperforgeConfig;
 use crate::git::{build_remote_url_with, Git, Transport};
-use crate::hub::{HyperforgeEvent, TransportChangeFailureReason};
-use crate::hubs::images::ImagesHub;
-use crate::hubs::releases::ReleasesHub;
-use crate::hubs::HyperforgeState;
+use crate::service::{HyperforgeEvent, TransportChangeFailureReason};
+use crate::services::images::ImagesService;
+use crate::services::releases::ReleasesService;
+use crate::services::HyperforgeState;
 use crate::types::{Forge, Repo, RepoRecord, Visibility};
 
 /// Create a forge adapter for the given forge, org, and auth provider.
@@ -87,13 +87,13 @@ fn materialize_events(report: &MaterializeReport) -> Vec<HyperforgeEvent> {
     events
 }
 
-/// Sub-hub for single-repo operations and registry CRUD
+/// Sub-service for single-repo operations and registry CRUD
 #[derive(Clone)]
-pub struct RepoHub {
+pub struct RepoService {
     pub(crate) state: HyperforgeState,
 }
 
-impl RepoHub {
+impl RepoService {
     pub const fn new(state: HyperforgeState) -> Self {
         Self { state }
     }
@@ -104,17 +104,17 @@ impl RepoHub {
     description = "Single-repo operations and registry CRUD",
     crate_path = "plexus_core"
 )]
-impl RepoHub {
+impl RepoService {
     /// Container image operations (list/pull/push/delete images in forge registries).
     #[plexus_macros::child]
-    fn images(&self) -> ImagesHub {
-        ImagesHub::new(self.state.clone())
+    fn images(&self) -> ImagesService {
+        ImagesService::new(self.state.clone())
     }
 
     /// Release operations (list/create/upload/download release artifacts).
     #[plexus_macros::child]
-    fn releases(&self) -> ReleasesHub {
-        ReleasesHub::new(self.state.clone())
+    fn releases(&self) -> ReleasesService {
+        ReleasesService::new(self.state.clone())
     }
 
     /// List repositories for an organization (from `LocalForge`)
@@ -2043,7 +2043,7 @@ impl RepoHub {
             }
 
             // Scan tracked files + git history
-            let scan = crate::hubs::build::large_files::scan_repo(&repo_path, threshold);
+            let scan = crate::services::build::large_files::scan_repo(&repo_path, threshold);
 
             match scan {
                 Ok(results) if results.is_empty() => {

@@ -1,6 +1,6 @@
-//! Hyperforge Auth Hub
+//! Hyperforge Auth Service
 //!
-//! Simple secret management hub using YAML storage.
+//! Simple secret management service using YAML storage.
 //!
 //! Usage:
 //!   hyperforge-auth [--port PORT]
@@ -8,15 +8,15 @@
 //! Default port: 44105 (lforge default + 1)
 
 use clap::Parser;
-use plexus_core::plexus::DynamicHub;
+use plexus_core::plexus::DynamicHub as DynamicService;
 use plexus_transport::TransportServer;
-use hyperforge::auth_hub::AuthHub;
+use hyperforge::auth_service::AuthService;
 use std::sync::Arc;
 use tracing::{info, error};
 
 #[derive(Parser, Debug)]
 #[command(name = "hyperforge-auth")]
-#[command(about = "Hyperforge Auth Hub - Secret management", long_about = None)]
+#[command(about = "Hyperforge Auth Service - Secret management", long_about = None)]
 struct Args {
     /// Port to listen on (default: lforge port + 1 = 44105)
     #[arg(short, long, default_value = "44105")]
@@ -35,36 +35,36 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    info!("Starting Hyperforge Auth Hub");
+    info!("Starting Hyperforge Auth Service");
     info!("Storage: ~/.config/hyperforge/secrets.yaml");
 
-    // Create auth hub
-    let auth_hub = match AuthHub::new().await {
-        Ok(hub) => hub,
+    // Create auth service
+    let auth_service = match AuthService::new().await {
+        Ok(service) => service,
         Err(e) => {
-            error!("Failed to create auth hub: {}", e);
+            error!("Failed to create auth service: {}", e);
             std::process::exit(1);
         }
     };
 
-    info!("Auth hub initialized");
+    info!("Auth service initialized");
 
-    // Create auth hub with unique namespace
-    // Note: Using "secrets" as DynamicHub namespace to avoid confusion with "auth" activation
+    // Create auth service with unique namespace
+    // Note: Using "secrets" as DynamicService namespace to avoid confusion with "auth" activation
     let auth = Arc::new(
-        DynamicHub::new("secrets")
-            .register(auth_hub)
+        DynamicService::new("secrets")
+            .register(auth_service)
     );
 
-    info!("Auth hub started");
+    info!("Auth service started");
     info!("  Namespace: secrets");
     info!("  Activation: auth");
     info!("  Version: 1.0.0");
     info!("  Description: Simple secret management");
 
     // Configure transport server
-    let rpc_converter = |arc: Arc<DynamicHub>| {
-        DynamicHub::arc_into_rpc_module(arc)
+    let rpc_converter = |arc: Arc<DynamicService>| {
+        DynamicService::arc_into_rpc_module(arc)
             .map_err(|e| anyhow::anyhow!("Failed to create RPC module: {e}"))
     };
 

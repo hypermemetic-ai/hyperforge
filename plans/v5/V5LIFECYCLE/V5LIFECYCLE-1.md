@@ -14,7 +14,7 @@ Close two related gaps in v5:
 1. **Deletion semantics.** v5's current `repos.delete` (V5PROV-7, since reverted) was a hard-delete that called `adapter.delete_repo` immediately. v4's actual behavior is a **soft-delete**: privatize on remote + mark the local record `dismissed` + keep it in `orgs/<org>.yaml`. A separate `repos.purge` does the hard delete. Protected repos refuse both.
 2. **Per-repo identity.** v5 has no `.hyperforge/config.toml`. v4 uses it as a secondary identity source when scanning workspaces. Without it, workspaces can't self-describe and `repos.init` has nothing to emit.
 
-A third, cross-cutting concern rides along: **DRY**. Before V5PROV we grew duplicated logic in `repos.sync` vs `workspaces.sync`, duplicated create-check paths, duplicated yaml I/O. This epic refactors every repo-level operation into a pure `ops::*` library layer (D13) before extending it with new lifecycle behavior — so both `ReposHub` and `WorkspacesHub` call into the same code.
+A third, cross-cutting concern rides along: **DRY**. Before V5PROV we grew duplicated logic in `repos.sync` vs `workspaces.sync`, duplicated create-check paths, duplicated yaml I/O. This epic refactors every repo-level operation into a pure `ops::*` library layer (D13) before extending it with new lifecycle behavior — so both `ReposService` and `WorkspacesService` call into the same code.
 
 ## Dependency DAG
 

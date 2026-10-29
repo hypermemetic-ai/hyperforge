@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use crate::commands::runner::discover_or_bail;
 use crate::commands::workspace::build_publish_dep_graph;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::{dry_prefix, RepoFilter};
+use crate::service::HyperforgeEvent;
+use crate::services::utils::{dry_prefix, RepoFilter};
 use crate::types::config::{resolve_ci_config, RunnerConfig, RunnerType};
 
 /// Run build/test commands using layered CI runners in dependency order.

@@ -1,5 +1,5 @@
 //! HYPERFORGE-9 · the contract, served and called: a scripted driver behind
-//! `server()`, on a hub, through the emitted client in process and over a
+//! `server()`, on a service, through the emitted client in process and over a
 //! real WebSocket, as a proxy, and held as `dyn Driver`.
 
 mod support;
@@ -13,7 +13,7 @@ use hyperforge_driver::{
     DriverEvent, Inputs, LogSupport, RunId, RunState, Target, TargetName,
 };
 use plexus_core::plexus::{Activation, InProcessTransport, PlexusStreamItem};
-use plexus_core::DynamicHub;
+use plexus_core::DynamicHub as DynamicService;
 use serde_json::{json, Value};
 use support::scripted::{target, Scripted};
 
@@ -66,8 +66,8 @@ fn the_schema_carries_every_method_parameter_and_state() {
     }
 }
 
-async fn data(hub: &DynamicHub, method: &str, params: Value) -> Vec<Value> {
-    hub.route(method, params, None)
+async fn data(service: &DynamicService, method: &str, params: Value) -> Vec<Value> {
+    service.route(method, params, None)
         .await
         .expect("routed")
         .filter_map(|item| async move {
@@ -82,9 +82,9 @@ async fn data(hub: &DynamicHub, method: &str, params: Value) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn on_a_hub_it_answers_by_its_wire_names() {
-    let hub = DynamicHub::new("toy").register(Scripted::new().server());
-    let described = data(&hub, "driver.describe", json!({})).await;
+async fn on_a_service_it_answers_by_its_wire_names() {
+    let service = DynamicService::new("toy").register(Scripted::new().server());
+    let described = data(&service, "driver.describe", json!({})).await;
     assert_eq!(described[0]["type"], "described");
     assert_eq!(described[0]["described"]["capabilities"], json!({"log": "live", "cancel": true, "approve": true, "records": false}));
     assert_eq!(described[0]["described"]["targets"][1], json!({"repo": {"org": "hypermemetic", "name": "menger"}, "name": "prod"}));
@@ -93,7 +93,7 @@ async fn on_a_hub_it_answers_by_its_wire_names() {
         "target": {"repo": {"org": "hypermemetic", "name": "menger"}, "name": "test"},
         "action": "deploy", "inputs": {"revision": "4c9b1bd"}, "reason": "the week's work",
     });
-    let run = data(&hub, "driver.trigger", params).await;
+    let run = data(&service, "driver.trigger", params).await;
     let types: Vec<&str> = run.iter().map(|e| e["type"].as_str().unwrap()).collect();
     assert_eq!(types, ["run", "state", "state", "log", "log", "state", "record"]);
     assert_eq!(run[0]["id"], "scripted-1");
@@ -223,8 +223,8 @@ async fn what_a_driver_lacks_is_not_supported() {
 #[tokio::test]
 async fn a_client_served_again_is_a_proxy_to_the_driver() {
     let remote = InProcessTransport::new(Scripted::new().server());
-    let hub = DynamicHub::new("toy").register(DriverClient::new(remote).server());
-    let described = data(&hub, "driver.describe", json!({})).await;
+    let service = DynamicService::new("toy").register(DriverClient::new(remote).server());
+    let described = data(&service, "driver.describe", json!({})).await;
     assert_eq!(described[0]["described"]["capabilities"]["log"], "live");
 }
 
@@ -247,17 +247,17 @@ async fn over_a_websocket_the_client_drives_a_run() {
     use plexus_client::WsTransport;
     use plexus_transport::TransportServer;
 
-    let hub = Arc::new(DynamicHub::new("toy").register(Scripted::new().server()));
+    let service = Arc::new(DynamicService::new("toy").register(Scripted::new().server()));
     let port = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().port()
     };
-    let server = TransportServer::builder(hub, |h| DynamicHub::arc_into_rpc_module(h).map_err(Into::into))
+    let server = TransportServer::builder(service, |h| DynamicService::arc_into_rpc_module(h).map_err(Into::into))
         .with_websocket(port)
         .without_registry()
         .build()
         .await
-        .expect("the toy hub builds");
+        .expect("the toy service builds");
     tokio::spawn(async move { server.serve().await });
 
     let mut transport = None;

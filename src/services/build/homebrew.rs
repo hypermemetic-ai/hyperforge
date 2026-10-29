@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::auth::AuthProvider;
-use crate::hub::HyperforgeEvent;
+use crate::service::HyperforgeEvent;
 use crate::types::Forge;
 
 use super::release::{make_auth, make_release_adapter};

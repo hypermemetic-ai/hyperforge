@@ -25,7 +25,7 @@ pub struct OrgConfig {
 /// This is the RPC-parameter shape for `orgs_add` and `orgs_update`. Each
 /// field corresponds to a known forge. The closed set of forges is
 /// expressed by the struct's field set — unknown forges are rejected at
-/// the CLI parse layer (Synapse), before the call reaches the hub. To
+/// the CLI parse layer (Synapse), before the call reaches the service. To
 /// add support for a new forge, add a field here.
 ///
 /// `JsonSchema` is required so Synapse can emit per-forge CLI flags

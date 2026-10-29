@@ -9,7 +9,7 @@ unlocks: [V5LIFECYCLE-3, V5LIFECYCLE-4]
 
 ## Problem
 
-Today every hub that touches yaml re-implements: loading config.yaml + orgs/*.yaml + workspaces/*.yaml, finding a repo in an org, atomically saving an org/workspace yaml. Per D13 this must live in one place.
+Today every service that touches yaml re-implements: loading config.yaml + orgs/*.yaml + workspaces/*.yaml, finding a repo in an org, atomically saving an org/workspace yaml. Per D13 this must live in one place.
 
 ## Required behavior
 
@@ -31,7 +31,7 @@ Required function surface (names indicative; signatures are the contract):
 | delete workspace file | `config_dir: &Path`, `&WorkspaceName` | `Result<(), ConfigError>` |
 
 Migration:
-- Every existing `load_*` / `save_*` / `find_repo*` call inside `src/v5/repos.rs`, `src/v5/workspaces.rs`, `src/v5/orgs.rs`, and `src/v5/hub.rs` routes through this module.
+- Every existing `load_*` / `save_*` / `find_repo*` call inside `src/v5/repos.rs`, `src/v5/workspaces.rs`, `src/v5/orgs.rs`, and `src/v5/service.rs` routes through this module.
 - The old functions in `src/v5/config.rs` either become thin re-exports from `ops::state` or are removed entirely. Implementer's call.
 
 ## What must NOT change
@@ -44,7 +44,7 @@ Migration:
 
 1. `cargo test --test v5_integration` tier-1 passes green; count matches pre-ticket count.
 2. `grep -RE 'serde_yaml|fs::(read_to_string|write|create_dir)' src/v5/ | grep -v '^src/v5/ops/'` returns empty (or only matches allowed paths: `src/v5/secrets.rs` for the YAML-backed secret store is exempt — it's state of a different kind).
-3. Every `src/v5/{repos,workspaces,orgs,hub}.rs` file references `ops::state::*` for at least one yaml interaction; none reference `load_all` / `save_org` / `load_workspaces` etc. via their old paths.
+3. Every `src/v5/{repos,workspaces,orgs,service}.rs` file references `ops::state::*` for at least one yaml interaction; none reference `load_all` / `save_org` / `load_workspaces` etc. via their old paths.
 4. A repo lookup across all callsites uses the same `find_repo` / `find_repo_mut` — no parallel implementations.
 
 ## Completion

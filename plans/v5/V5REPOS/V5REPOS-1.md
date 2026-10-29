@@ -9,7 +9,7 @@ unlocks: [V5WS-9]
 
 ## Goal
 
-Populate the `ReposHub` stub (registered in V5CORE-7) with full repo CRUD
+Populate the `ReposService` stub (registered in V5CORE-7) with full repo CRUD
 against the org-YAML storage, plus the `ForgePort` trait and adapters for
 GitHub, Codeberg, and GitLab, plus the `sync` and `push` methods that
 carry repo metadata between local state and remote forges through those
@@ -170,7 +170,7 @@ which adapter to pilot; the others follow via shared interface.
 
 - Git transport operations (clone, fetch, push of git refs). v5 Repos
   syncs *metadata only*. Git-level operations are post-v5, likely as a
-  separate hub (`git.*`) that composes with `repos.*`.
+  separate service (`git.*`) that composes with `repos.*`.
 - `repo init` / `.hyperforge/config.toml` management. Out of v5 scope.
 - Incremental listing / ETag caching from v4's `list_repos_incremental`.
   v5 adapters may adopt this later; v1 reads fresh.

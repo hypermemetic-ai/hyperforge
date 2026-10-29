@@ -1,11 +1,11 @@
-# CONF-5: Config-First Repo Hub Operations
+# CONF-5: Config-First Repo Service Operations
 
 **blocked_by**: [CONF-3]
 **unlocks**: [CONF-7]
 
 ## Scope
 
-Rewire `RepoHub` methods so all mutations flow through LocalForge first, then materialize to disk. Currently, `init` writes config directly, `create` writes LocalForge but not config, `rename` updates LocalForge+remotes but not config, etc. After this ticket, the pattern is always: mutate LocalForge → save → materialize.
+Rewire `RepoService` methods so all mutations flow through LocalForge first, then materialize to disk. Currently, `init` writes config directly, `create` writes LocalForge but not config, `rename` updates LocalForge+remotes but not config, etc. After this ticket, the pattern is always: mutate LocalForge → save → materialize.
 
 ## Method-by-Method Changes
 

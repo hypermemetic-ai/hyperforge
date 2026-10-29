@@ -5,9 +5,9 @@
 //!
 //! | output | what | build |
 //! |---|---|---|
-//! | the schema | every method and type, from the doc comments; any language through synapse-cc | any hub that mounts it |
+//! | the schema | every method and type, from the doc comments; any language through synapse-cc | any service that mounts it |
 //! | `trait Driver` | what a built-in driver implements; `Arc<dyn Driver>` in hyperforge | always |
-//! | `DriverActivation<D>`, `Driver::server()` | serves any `D: Driver` on a hub | `server` |
+//! | `DriverActivation<D>`, `Driver::server()` | serves any `D: Driver` on a service | `server` |
 //! | `DriverClient<T>: Driver` | a plugin, reached over a transport; menger's ENV-3 | always |
 //!
 //! ```

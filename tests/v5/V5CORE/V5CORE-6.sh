@@ -5,10 +5,10 @@ source "$(dirname "$0")/../harness/lib.sh"
 
 hf_spawn
 
-# Schema shows an orgs child backed by OrgsHub with zero methods/children.
+# Schema shows an orgs child backed by OrgsService with zero methods/children.
 schema=$(hf_cmd __schema__ 2>/dev/null || hf_cmd)
 
-echo "$schema" | hf_assert_event '.path == "orgs" and .activation == "OrgsHub"'
+echo "$schema" | hf_assert_event '.path == "orgs" and .activation == "OrgsService"'
 echo "$schema" | hf_assert_event '.path == "orgs" and (.methods | length == 0)'
 echo "$schema" | hf_assert_event '.path == "orgs" and (.children | length == 0)'
 

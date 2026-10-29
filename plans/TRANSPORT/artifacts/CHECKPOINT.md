@@ -14,7 +14,7 @@ SSH key lifecycle, no new forges — those stay out of scope.
 ## Automated verification
 
 `tests/e2e_transport.rs` compiles each scenario into a `#[tokio::test]`
-that drives the shipped Rust hub surface through `DynamicHub::route` —
+that drives the shipped Rust service surface through `DynamicService::route` —
 the same code path a `synapse … repo set_transport …` call reaches.
 Assertions are on end-states (`git remote -v` output, `repo status`
 events), not intermediate event strings, so the tests survive

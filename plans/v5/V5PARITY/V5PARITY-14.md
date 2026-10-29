@@ -17,7 +17,7 @@ V5PARITY-3 gave workspaces the four "transport" verbs (`clone`, `fetch`, `pull`,
 
 ## Required behavior
 
-**RPC methods on WorkspacesHub:**
+**RPC methods on WorkspacesService:**
 
 | Method | Behavior |
 |---|---|

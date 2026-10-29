@@ -22,8 +22,8 @@ grep -q 'name = "hyperforge-v5"' Cargo.toml \
     || { echo "FAIL: hyperforge-v5 alias missing (needed for in-flight tests)" >&2; exit 1; }
 echo "binaries: hyperforge (canonical), hyperforge-v5 (alias), hyperforge-legacy (v4)"
 
-# --- (3) hyperforge.rs is the v5 source (recognizable by HyperforgeHub use) ---
-grep -q "use hyperforge::v5::hub::HyperforgeHub" src/bin/hyperforge.rs \
+# --- (3) hyperforge.rs is the v5 source (recognizable by HyperforgeService use) ---
+grep -q "use hyperforge::v5::service::HyperforgeService" src/bin/hyperforge.rs \
     || { echo "FAIL: src/bin/hyperforge.rs is not the v5 source" >&2; exit 1; }
 echo "src/bin/hyperforge.rs: v5 source"
 

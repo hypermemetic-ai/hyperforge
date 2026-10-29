@@ -1,4 +1,4 @@
-//! `WorkspaceHub` — Forge/registry operations for multi-repo workspaces.
+//! `WorkspaceService` — Forge/registry operations for multi-repo workspaces.
 //!
 //! Methods here read/write `LocalForge` and talk to forge APIs. Development tools
 //! (manifest generation, publishing, cross-repo execution) live in [`super::build`].
@@ -18,21 +18,21 @@ use crate::commands::runner::{collect_push_results, discover_or_bail, run_batch,
 use crate::commands::workspace::{repo_from_config, DiscoveredRepo, WorkspaceContext};
 use crate::config::HyperforgeConfig;
 use crate::git::Git;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::HyperforgeState;
-use crate::hubs::repo::RepoHub;
-use crate::hubs::utils::{dry_prefix, make_adapter, workspace_summary, RepoFilter};
+use crate::service::HyperforgeEvent;
+use crate::services::HyperforgeState;
+use crate::services::repo::RepoService;
+use crate::services::utils::{dry_prefix, make_adapter, workspace_summary, RepoFilter};
 use crate::services::SyncOp;
 use crate::types::Visibility;
 use std::collections::HashSet;
 
-/// Sub-hub for multi-repo workspace orchestration
+/// Sub-service for multi-repo workspace orchestration
 #[derive(Clone)]
-pub struct WorkspaceHub {
+pub struct WorkspaceService {
     pub(crate) state: HyperforgeState,
 }
 
-impl WorkspaceHub {
+impl WorkspaceService {
     pub const fn new(state: HyperforgeState) -> Self {
         Self { state }
     }
@@ -43,7 +43,7 @@ impl WorkspaceHub {
     description = "Multi-repo workspace orchestration",
     crate_path = "plexus_core"
 )]
-impl WorkspaceHub {
+impl WorkspaceService {
     /// Discover repos in a workspace directory
     #[plexus_macros::method(
         description = "Scan a workspace directory and report discovered repos, orgs, and forges",
@@ -247,12 +247,12 @@ impl WorkspaceHub {
 
             let mut inits_performed = 0usize;
             let mut init_failed = 0usize;
-            let repo_hub = RepoHub::new(state.clone());
+            let repo_service = RepoService::new(state.clone());
             let org_str = inferred_org.as_deref().unwrap().to_string();
             let forges_csv = inferred_forges.join(",");
 
             for repo_path in &targets {
-                let stream = repo_hub.init(
+                let stream = repo_service.init(
                     repo_path.display().to_string(),
                     forges_csv.clone(),
                     org_str.clone(),
@@ -1002,16 +1002,16 @@ impl WorkspaceHub {
             let mut total_sync_errors = 0usize;
 
             if !repos_to_sync.is_empty() {
-                let repo_hub = RepoHub::new(state.clone());
+                let repo_service = RepoService::new(state.clone());
                 let sync_items: Vec<_> = repos_to_sync.into_iter().map(|(org, name)| {
-                    let hub = Clone::clone(&repo_hub);
-                    (hub, org, name)
+                    let service = Clone::clone(&repo_service);
+                    (service, org, name)
                 }).collect();
 
                 let sync_results = run_batch(sync_items, 8, {
                     let dry_run = Some(is_dry_run);
-                    move |(hub, org, name): (RepoHub, String, String)| async move {
-                        let stream = hub.sync(org, name.clone(), dry_run).await;
+                    move |(service, org, name): (RepoService, String, String)| async move {
+                        let stream = service.sync(org, name.clone(), dry_run).await;
                         tokio::pin!(stream);
                         let events: Vec<HyperforgeEvent> = stream.collect().await;
                         let has_error = events.iter().any(|e| matches!(e, HyperforgeEvent::Error { .. }));
@@ -1282,8 +1282,8 @@ impl WorkspaceHub {
                 }
             }
 
-            // Build items for delegation to repo hub
-            let repo_hub = RepoHub::new(state);
+            // Build items for delegation to repo service
+            let repo_service = RepoService::new(state);
             let items: Vec<_> = repos.iter()
                 .filter(|r| r.config.is_some() && r.org().is_some())
                 .map(|r| (**r).clone())
@@ -1296,18 +1296,18 @@ impl WorkspaceHub {
                     (org, repo_name, repo_path)
                 })
                 .map(|(org, repo_name, repo_path)| {
-                    let hub = Clone::clone(&repo_hub);
-                    (hub, org, repo_name, repo_path)
+                    let service = Clone::clone(&repo_service);
+                    (service, org, repo_name, repo_path)
                 })
                 .collect();
 
             let results = run_batch(items, 8, {
                 let branch = branch.clone();
-                move |(hub, org, repo_name, repo_path): (RepoHub, String, String, String)| {
+                move |(service, org, repo_name, repo_path): (RepoService, String, String, String)| {
                     let branch = branch.clone();
                     let path = if is_checkout { Some(repo_path) } else { None };
                     async move {
-                        let stream = hub.set_default_branch(org, repo_name.clone(), branch, Some(is_checkout), path).await;
+                        let stream = service.set_default_branch(org, repo_name.clone(), branch, Some(is_checkout), path).await;
                         tokio::pin!(stream);
                         let events: Vec<HyperforgeEvent> = stream.collect().await;
                         let has_error = events.iter().any(|e| matches!(e, HyperforgeEvent::Error { .. }));
@@ -1574,7 +1574,7 @@ impl WorkspaceHub {
                 for forge in &["github", "codeberg", "gitlab"] {
                     let _token_key = format!("{forge}/{org_name}/token");
                     yield HyperforgeEvent::Info {
-                        message: format!("  ℹ Auth check for {forge}/{org_name} (use auth hub to verify)"),
+                        message: format!("  ℹ Auth check for {forge}/{org_name} (use auth service to verify)"),
                     };
                 }
             }
@@ -1730,24 +1730,24 @@ impl WorkspaceHub {
                 }
             }
 
-            // 6. Clone via delegation to repo hub
+            // 6. Clone via delegation to repo service
             let mut success_count = 0usize;
             let mut failed_count = 0usize;
 
-            let repo_hub = RepoHub::new(state);
+            let repo_service = RepoService::new(state);
             let clone_inputs: Vec<_> = to_clone.into_iter()
                 .map(|r| {
-                    let hub = Clone::clone(&repo_hub);
+                    let service = Clone::clone(&repo_service);
                     let target = workspace_path.join(&r.name).display().to_string();
-                    (hub, org.clone(), r.name, target, forge.clone())
+                    (service, org.clone(), r.name, target, forge.clone())
                 })
                 .collect();
 
             let clone_results = run_batch(
                 clone_inputs,
                 max_concurrent,
-                |(hub, org, name, target_path, forge_pref): (RepoHub, String, String, String, Option<String>)| async move {
-                    let stream = RepoHub::clone(&hub, org, name.clone(), Some(target_path), forge_pref).await;
+                |(service, org, name, target_path, forge_pref): (RepoService, String, String, String, Option<String>)| async move {
+                    let stream = RepoService::clone(&service, org, name.clone(), Some(target_path), forge_pref).await;
                     tokio::pin!(stream);
                     let events: Vec<HyperforgeEvent> = stream.collect().await;
                     let has_error = events.iter().any(|e| matches!(e, HyperforgeEvent::Error { .. }));

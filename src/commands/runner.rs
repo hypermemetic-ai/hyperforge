@@ -121,9 +121,9 @@ where
 #[allow(clippy::result_large_err)]
 pub fn discover_or_bail(
     path: &std::path::Path,
-) -> Result<crate::commands::workspace::WorkspaceContext, crate::hub::HyperforgeEvent> {
+) -> Result<crate::commands::workspace::WorkspaceContext, crate::service::HyperforgeEvent> {
     crate::commands::workspace::discover_workspace(path).map_err(|e| {
-        crate::hub::HyperforgeEvent::Error {
+        crate::service::HyperforgeEvent::Error {
             message: format!("Discovery failed: {e}"),
         }
     })
@@ -142,17 +142,17 @@ pub struct DiffBatchEntry {
 /// and sync Phase 6. Callers iterate the results and yield events as needed.
 pub async fn run_diff_batch(
     pairs: &[(String, String)],
-    state: &crate::hubs::HyperforgeState,
+    state: &crate::services::HyperforgeState,
     sync_service: &std::sync::Arc<crate::services::SymmetricSyncService>,
 ) -> Vec<Result<DiffBatchEntry, String>> {
-    let items: Vec<(String, String, crate::hubs::HyperforgeState, std::sync::Arc<crate::services::SymmetricSyncService>)> = pairs
+    let items: Vec<(String, String, crate::services::HyperforgeState, std::sync::Arc<crate::services::SymmetricSyncService>)> = pairs
         .iter()
         .map(|(o, f)| (o.clone(), f.clone(), state.clone(), sync_service.clone()))
         .collect();
     run_batch(items, 8, |(org_name, forge_name, state, sync_service)| async move {
         let local = state.get_local_forge(&org_name).await;
         let ot = local.owner_type();
-        let adapter = match crate::hubs::utils::make_adapter(&forge_name, &org_name, ot) {
+        let adapter = match crate::services::utils::make_adapter(&forge_name, &org_name, ot) {
             Ok(a) => a,
             Err(e) => {
                 return DiffBatchEntry {
@@ -178,7 +178,7 @@ pub async fn run_diff_batch(
 /// Result of processing push batch results into events.
 pub struct PushBatchResult {
     /// Events to yield to the caller
-    pub events: Vec<crate::hub::HyperforgeEvent>,
+    pub events: Vec<crate::service::HyperforgeEvent>,
     /// Number of repos where all pushes succeeded
     pub success_count: usize,
     /// Number of repos where at least one push failed
@@ -209,7 +209,7 @@ pub fn collect_push_results(
         let (dir_name, path, push_result) = match result {
             Ok(v) => v,
             Err(e) => {
-                events.push(crate::hub::HyperforgeEvent::Error {
+                events.push(crate::service::HyperforgeEvent::Error {
                     message: format!("Task error: {e}"),
                 });
                 failed_count += 1;
@@ -222,7 +222,7 @@ pub fn collect_push_results(
                 // Only emit events for failures
                 for r in &report.results {
                     if !r.success {
-                        events.push(crate::hub::HyperforgeEvent::RepoPush {
+                        events.push(crate::service::HyperforgeEvent::RepoPush {
                             repo_name: dir_name.clone(),
                             path: path.display().to_string(),
                             forge: r.forge.clone(),
@@ -239,7 +239,7 @@ pub fn collect_push_results(
                 }
             }
             Err(e) => {
-                events.push(crate::hub::HyperforgeEvent::RepoPush {
+                events.push(crate::service::HyperforgeEvent::RepoPush {
                     repo_name: dir_name.clone(),
                     path: path.display().to_string(),
                     forge: "all".to_string(),
@@ -263,7 +263,7 @@ pub fn collect_push_results(
 /// Result of running a validation gate.
 pub struct ValidationGateResult {
     /// Events to yield to the caller (`ValidateStep`, `ValidateSummary`, Error)
-    pub events: Vec<crate::hub::HyperforgeEvent>,
+    pub events: Vec<crate::service::HyperforgeEvent>,
     /// Whether validation passed (None if not run, Some(true) if passed, Some(false) if failed)
     pub passed: Option<bool>,
 }
@@ -285,7 +285,7 @@ pub fn run_validation_gate(
                 crate::build_system::validate::execute_validation(&p, workspace_root, is_dry_run);
             let mut events = Vec::new();
             for r in &results {
-                events.push(crate::hub::HyperforgeEvent::ValidateStep {
+                events.push(crate::service::HyperforgeEvent::ValidateStep {
                     repo_name: r.repo_name.clone(),
                     step: r.step.clone(),
                     status: format!("{}", r.status),
@@ -294,7 +294,7 @@ pub fn run_validation_gate(
             }
             let summary = crate::build_system::validate::summarize_results(&results);
             let passed = summary.failed == 0;
-            events.push(crate::hub::HyperforgeEvent::ValidateSummary {
+            events.push(crate::service::HyperforgeEvent::ValidateSummary {
                 total: summary.total,
                 passed: summary.passed,
                 failed: summary.failed,
@@ -302,7 +302,7 @@ pub fn run_validation_gate(
                 duration_ms: summary.duration_ms,
             });
             if !passed {
-                events.push(crate::hub::HyperforgeEvent::Error {
+                events.push(crate::service::HyperforgeEvent::Error {
                     message: format!(
                         "Validation failed ({}/{} steps failed) — aborting push.",
                         summary.failed, summary.total
@@ -315,7 +315,7 @@ pub fn run_validation_gate(
             }
         }
         Err(e) => ValidationGateResult {
-            events: vec![crate::hub::HyperforgeEvent::Error {
+            events: vec![crate::service::HyperforgeEvent::Error {
                 message: format!("Validation plan failed: {e} — aborting push."),
             }],
             passed: Some(false),

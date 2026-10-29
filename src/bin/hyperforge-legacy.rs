@@ -1,8 +1,8 @@
 use clap::Parser;
-use plexus_core::plexus::DynamicHub;
+use plexus_core::plexus::DynamicHub as DynamicService;
 use plexus_transport::TransportServer;
-use hyperforge::HyperforgeHub;
-use hyperforge::auth_hub::AuthHub;
+use hyperforge::HyperforgeService;
+use hyperforge::auth_service::AuthService;
 use hyperforge::registry::{RegistryClient, RegistryConfig};
 use std::sync::Arc;
 
@@ -51,8 +51,8 @@ async fn main() -> anyhow::Result<()> {
     //   hyperforge::docker::connect      — Docker socket discovery
     //   hyperforge::docker::build        — image builds (trace = stream output)
     //   hyperforge::docker::push         — registry push (trace = layer progress)
-    //   hyperforge::hubs::workspace      — sync/diff pipeline phases
-    //   hyperforge::hubs::images         — container image operations
+    //   hyperforge::services::workspace      — sync/diff pipeline phases
+    //   hyperforge::services::images         — container image operations
     //   hyperforge::adapters::registry   — registry API calls
     //
     // Examples:
@@ -81,10 +81,10 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting hyperforge at {}", chrono::Utc::now());
 
-    // Create lforge hub (DynamicHub with "lforge" namespace, hyperforge activation registered)
+    // Create lforge service (DynamicService with "lforge" namespace, hyperforge activation registered)
     let lforge = Arc::new(
-        DynamicHub::new("lforge")
-            .register(HyperforgeHub::new())
+        DynamicService::new("lforge")
+            .register(HyperforgeService::new())
     );
 
     // Log activation info
@@ -127,14 +127,14 @@ async fn main() -> anyhow::Result<()> {
     // Auto-start secrets sidecar in-process on port + 1
     let secrets_handle = if !args.no_secrets && !args.stdio {
         let secrets_port = args.port + 1;
-        match AuthHub::new().await {
-            Ok(auth_hub) => {
+        match AuthService::new().await {
+            Ok(auth_service) => {
                 let secrets = Arc::new(
-                    DynamicHub::new("secrets")
-                        .register(auth_hub)
+                    DynamicService::new("secrets")
+                        .register(auth_service)
                 );
-                let rpc_conv = |arc: Arc<DynamicHub>| {
-                    DynamicHub::arc_into_rpc_module(arc)
+                let rpc_conv = |arc: Arc<DynamicService>| {
+                    DynamicService::arc_into_rpc_module(arc)
                         .map_err(|e| anyhow::anyhow!("Failed to create RPC module: {e}"))
                 };
                 match TransportServer::builder(secrets, rpc_conv)
@@ -157,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Err(e) => {
-                tracing::warn!("failed to init secrets hub (non-fatal): {e}");
+                tracing::warn!("failed to init secrets service (non-fatal): {e}");
                 None
             }
         }
@@ -166,8 +166,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Configure transport server
-    let rpc_converter = |arc: Arc<DynamicHub>| {
-        DynamicHub::arc_into_rpc_module(arc)
+    let rpc_converter = |arc: Arc<DynamicService>| {
+        DynamicService::arc_into_rpc_module(arc)
             .map_err(|e| anyhow::anyhow!("Failed to create RPC module: {e}"))
     };
 

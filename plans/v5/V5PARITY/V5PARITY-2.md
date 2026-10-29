@@ -23,7 +23,7 @@ v5 has no way to ask a forge "what repos exist under this org" or to bootstrap a
 
 **Three adapters implement it.** GitHub `/orgs/{org}/repos` (+ user endpoint fallback per V5PROV-3 pattern), Codeberg `/orgs/{org}/repos`, GitLab `/groups/{org}/projects`. Pagination handled internally; output is the concatenated list.
 
-**New hub methods:**
+**New service methods:**
 
 | Method | Purpose |
 |---|---|

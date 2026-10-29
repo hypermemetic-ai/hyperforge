@@ -15,7 +15,7 @@ synapse plexus hyperforge org hypermemetic repos diff
         │       │          │      │         └── child namespace (ReposActivation)
         │       │          │      └── dynamic child (org name)
         │       │          └── child namespace (OrgActivation)
-        │       └── hub namespace
+        │       └── service namespace
         └── plexus router
 ```
 
@@ -29,7 +29,7 @@ synapse plexus hyperforge org hypermemetic repos diff
 CLI Path: org hypermemetic repos diff
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ HyperforgeHub                                                    │
+│ HyperforgeService                                                    │
 │   children: [OrgActivation, ForgeActivation, WorkspaceActivation]│
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -473,7 +473,7 @@ Benefits:
 
 | Level | Context Source | What's Passed |
 |-------|---------------|---------------|
-| Hub | - | Entry point |
+| Service | - | Entry point |
 | Org | Path segment | `get_child("hypermemetic")` extracts OrgConfig |
 | OrgChildRouter | Parent | org_name + OrgConfig |
 | Repos | Parent | org_name + OrgConfig |
@@ -485,15 +485,15 @@ Benefits:
 
 ---
 
-## Relationship to substrate HubContext
+## Relationship to substrate ServiceContext
 
-This pattern mirrors substrate's `HubContext` pattern used by Cone and ClaudeCode:
+This pattern mirrors substrate's `ServiceContext` pattern used by Cone and ClaudeCode:
 
 | Substrate | Hyperforge |
 |-----------|------------|
-| `HubContext` trait | `OrgConfig` struct |
+| `ServiceContext` trait | `OrgConfig` struct |
 | `Weak<Plexus>` | `OrgConfig` (cloned) |
 | `inject_parent()` | Constructor parameter |
 | `resolve_handle()` | Access org configuration |
 
-The key difference: Substrate's HubContext provides _capabilities_ (method calls, handle resolution). Hyperforge's OrgConfig provides _data_ (forge list, owner, SSH keys). Both eliminate redundant lookups by passing context from parent to child.
+The key difference: Substrate's ServiceContext provides _capabilities_ (method calls, handle resolution). Hyperforge's OrgConfig provides _data_ (forge list, owner, SSH keys). Both eliminate redundant lookups by passing context from parent to child.

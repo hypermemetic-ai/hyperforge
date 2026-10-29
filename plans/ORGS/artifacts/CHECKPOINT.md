@@ -3,8 +3,8 @@
 Snapshot as of 2026-04-18, after ORGS-2 (`orgs_add`) and ORGS-3
 (`orgs_update`) landed. Generated while implementing ORGS-4; every row
 below is backed by an E2E test in `tests/e2e_user_stories.rs` that
-exercises the shipped hub surface end-to-end (JSON in via
-`DynamicHub::route` → hub → disk).
+exercises the shipped service surface end-to-end (JSON in via
+`DynamicService::route` → service → disk).
 
 ## User stories
 
@@ -15,7 +15,7 @@ exercises the shipped hub surface end-to-end (JSON in via
 | US-3 | Re-home and then clear `workspace_path` | 🟢     | Three-intent handling works: dry-run does not persist, set writes the new value, empty-string clears the field and `skip_serializing_if` drops it from the TOML. |
 | US-4 | Preview before writing (`dry_run`)      | 🟢     | `orgs_add --dry_run true` emits a preview event referencing the org name and writes nothing. |
 | US-5 | Scripted idempotent bootstrap           | 🟡     | Works when the caller guards with `orgs_list` (shell: `jq -e`). `orgs_add` itself is not idempotent — a second call without the guard returns `OrgAddFailed { reason: AlreadyExists }`. Recoverable for scripts, but there is no native `--if-not-exists` flag; see re-pitch. |
-| US-6 | `--help` discoverability                | 🟢     | Tested via the hub's `JsonSchema`: both `orgs_add` and `orgs_update` expose `ssh` as an object with typed `github`/`codeberg`/`gitlab` fields. Synapse derives per-forge `--ssh.<forge>` flags from exactly this shape. |
+| US-6 | `--help` discoverability                | 🟢     | Tested via the service's `JsonSchema`: both `orgs_add` and `orgs_update` expose `ssh` as an object with typed `github`/`codeberg`/`gitlab` fields. Synapse derives per-forge `--ssh.<forge>` flags from exactly this shape. |
 | Anti | Rename via `orgs_delete` + `orgs_add`   | 🟢     | Composition works. The anti-story is honored — no rename RPC exists and none is needed. |
 
 ## Deferred / discovered
@@ -44,8 +44,8 @@ exercises the shipped hub surface end-to-end (JSON in via
 Org CRUD is **done for now** for the "one developer, few orgs" case
 this epic was scoped for. All seven user stories compose, and the only
 non-green row (US-5) is a known shape — idempotency was framed as a
-caller-side composition, not a hub-side feature, and the ORGS-4 ticket
-template anticipated exactly this as a yellow. The hub's error
+caller-side composition, not a service-side feature, and the ORGS-4 ticket
+template anticipated exactly this as a yellow. The service's error
 discriminator (`OrgAddFailureReason::AlreadyExists`) is sufficient for
 a script to detect duplicates and move on. If a future consumer emerges
 that needs bulk declarative import or in-protocol idempotency (e.g. a

@@ -5,10 +5,10 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use hub_core::plexus::{
+use plexus_core::plexus::{
     Activation, ChildRouter, PlexusStream, PlexusError,
 };
-use hub_macro::hub_methods;
+use plexus_macros::activation;
 
 use crate::bridge::{GitRemoteBridge, PulumiBridge, create_registry, create_secret_store};
 use crate::storage::{HyperforgePaths, OrgStorage, GlobalConfig, OrgConfig};
@@ -35,15 +35,15 @@ impl RepoChildRouter {
     }
 }
 
-#[hub_methods(
+#[activation(
     namespace = "repo",
     version = "1.0.0",
     description = "Repository operations",
-    crate_path = "hub_core"
+    crate_path = "plexus_core"
 )]
 impl RepoChildRouter {
     /// Show repository details
-    #[hub_method(description = "Show repository details")]
+    #[method(description = "Show repository details")]
     pub async fn show(&self) -> impl Stream<Item = RepoEvent> + Send + 'static {
         let storage = self.storage();
         let org_name = self.org_name.clone();
@@ -84,7 +84,7 @@ impl RepoChildRouter {
     }
 
     /// Sync repository to forges
-    #[hub_method(
+    #[method(
         description = "Sync repository to forges",
         params(
             dry_run = "Preview changes without applying",
@@ -275,7 +275,7 @@ impl RepoChildRouter {
     }
 
     /// List packages configured for this repository
-    #[hub_method(description = "List packages configured for this repository")]
+    #[method(description = "List packages configured for this repository")]
     pub async fn packages_list(&self) -> impl Stream<Item = PackageEvent> + Send + 'static {
         let org_name = self.org_name.clone();
         let repo_name = self.repo_name.clone();
@@ -338,7 +338,7 @@ impl RepoChildRouter {
     }
 
     /// Show package status (local vs published versions)
-    #[hub_method(description = "Show package status (local vs published versions)")]
+    #[method(description = "Show package status (local vs published versions)")]
     pub async fn packages_status(&self) -> impl Stream<Item = PackageEvent> + Send + 'static {
         let org_name = self.org_name.clone();
         let repo_name = self.repo_name.clone();
@@ -448,7 +448,7 @@ impl RepoChildRouter {
     }
 
     /// Publish packages to registries
-    #[hub_method(
+    #[method(
         description = "Publish packages to registries",
         params(
             dry_run = "Preview what would be published without actually publishing",

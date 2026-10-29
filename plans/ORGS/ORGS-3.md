@@ -21,7 +21,7 @@ Same shared context as ORGS-2:
 - `OrgConfig` at `src/config/org.rs:12-21`
 - `OrgConfig::load(org)` and `OrgConfig::save(org)` are the existing
   I/O entry points.
-- `orgs_delete` (`src/hub.rs:967-1049`) demonstrates dry-run semantics
+- `orgs_delete` (`src/service.rs:967-1049`) demonstrates dry-run semantics
   and event stream style.
 
 ## Required behavior
@@ -82,13 +82,13 @@ After any successful `orgs_update` call, `orgs_list` returns the org's state con
 7. `orgs_update` on a non-existent org fails; the failure is distinguishable from a "no fields to update" failure by inspecting only the event stream.
 8. `orgs_update` with no mutation fields fails with the "no fields to update" diagnosis.
 9. `synapse … orgs_update --help` lists per-forge discoverable flags; no single flag accepts a JSON object for ssh.
-10. For every acceptance criterion above that enumerates a success or failure, a test asserts the expected outcome by reading observable state (`orgs_list` output or the event stream) — no test reads hub implementation source.
+10. For every acceptance criterion above that enumerates a success or failure, a test asserts the expected outcome by reading observable state (`orgs_list` output or the event stream) — no test reads service implementation source.
 11. Round-trip integrity: after any sequence of successful `orgs_update` calls, `orgs_list` returns state consistent with the caller's intents across all three parameters (`ssh`, `workspace_path`, `replace` mode).
 12. Integration test in `tests/integration_test.rs` covers every case above. `cargo test --test integration_test` passes.
 
 ## Completion
 
-- Method added to `src/hub.rs` under the root hub activation.
+- Method added to `src/service.rs` under the root service activation.
 - Integration tests for this method added.
 - Documentation owned by this ticket is updated in the same commit:
   - `README.md` cheatsheet gains an `orgs_update` row with a one-line

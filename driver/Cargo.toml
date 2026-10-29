@@ -48,7 +48,7 @@ plexus-client = { path = "../../plexus-macros/plexus-client", version = "0.6.1",
 plexus-transport = { path = "../../plexus-transport", version = "0.5.1" }
 
 [[example]]
-name = "toy_hub"
+name = "toy_service"
 required-features = ["server"]
 
 [lints.rust]

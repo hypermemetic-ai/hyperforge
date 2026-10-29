@@ -20,7 +20,7 @@ Which credentials? Two sources, in this order:
   1. hyperforge itself — `auth_requirements`: one row per org × forge
      credential ref, with `present`. This is the authoritative list of
      forge tokens.
-  2. the registry channels hyperforge publishes through — the build hub
+  2. the registry channels hyperforge publishes through — the build service
      resolves `cargo/token`, `npm/token`, `pypi/token`, and the Hackage
      publisher `hackage/token`. `auth_requirements` does not report these
      yet (V5PARITY-37); until it does, the table below is the second

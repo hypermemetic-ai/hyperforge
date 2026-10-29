@@ -24,10 +24,10 @@ Three pure-ish functions in `src/v5/ops/repo` (signatures are the contract; name
 Each resolves provider via `ops::repo::derive_provider` (already pub(crate) since V5WS-9), resolves credentials via the resolver, constructs the adapter via `crate::v5::adapters::for_provider`, and calls the corresponding trait method. No event emission — just Result.
 
 Migration:
-- `ReposHub::add --create_remote` path (V5PROV-6) calls `ops::repo::exists_on_forge` + `ops::repo::create_on_forge`.
-- `WorkspacesHub::sync` auto-create path (V5PROV-8) calls the same two.
-- `ReposHub` `delete`-like code paths (after V5LIFECYCLE-5/6/7 land) call `ops::repo::delete_on_forge` from V5LIFECYCLE-7.
-- No hub invokes `for_provider` or `adapter.{create_repo,delete_repo,repo_exists}` directly anywhere outside `ops::`.
+- `ReposService::add --create_remote` path (V5PROV-6) calls `ops::repo::exists_on_forge` + `ops::repo::create_on_forge`.
+- `WorkspacesService::sync` auto-create path (V5PROV-8) calls the same two.
+- `ReposService` `delete`-like code paths (after V5LIFECYCLE-5/6/7 land) call `ops::repo::delete_on_forge` from V5LIFECYCLE-7.
+- No service invokes `for_provider` or `adapter.{create_repo,delete_repo,repo_exists}` directly anywhere outside `ops::`.
 
 ## What must NOT change
 
@@ -38,7 +38,7 @@ Migration:
 ## Acceptance criteria
 
 1. Tier-1 sweep passes green; counts identical to pre-ticket.
-2. `grep -RE 'adapter\.(create_repo|delete_repo|repo_exists)|for_provider' src/v5/{repos,workspaces,orgs,hub}.rs` returns empty — all callers route through `ops::repo::*`.
+2. `grep -RE 'adapter\.(create_repo|delete_repo|repo_exists)|for_provider' src/v5/{repos,workspaces,orgs,service}.rs` returns empty — all callers route through `ops::repo::*`.
 3. The `V5PROV-6` tier-2 test (with tier-2 config populated) still passes end-to-end after the refactor.
 4. The `V5PROV-8` tier-2 test still passes end-to-end after the refactor.
 

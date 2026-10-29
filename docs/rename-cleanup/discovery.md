@@ -6,12 +6,12 @@ Date: 2026-02-19
 
 | Old Name | New Name | Rename Date | Evidence | Old Repo Exists? |
 |---|---|---|---|---|
-| `hub-macro` | `plexus-macros` | Feb 4, 2026 | Commit `1fb6780`: "refactor: rename package hub-macro -> plexus-macros" | No (GitHub 404, no Codeberg repo) |
-| `hub-core` | `plexus-core` | Feb 4, 2026 | Commits `ab0e0ed`, `b62a69c`: rename + lib name fix | No (GitHub 404, no Codeberg repo) |
+| (the macro crate's former name) | `plexus-macros` | Feb 4, 2026 | Commit `1fb6780`: "refactor: rename package … -> plexus-macros" | No (GitHub 404, no Codeberg repo) |
+| (the core crate's former name) | `plexus-core` | Feb 4, 2026 | Commits `ab0e0ed`, `b62a69c`: rename + lib name fix | No (GitHub 404, no Codeberg repo) |
 | `substrate-protocol` | `plexus-protocol` | Feb 4, 2026 | Commit `d5b5a81`: cabal file + module rename (Substrate.* -> Plexus.*) | No (GitHub 404, no Codeberg repo) |
 | `substrate-sandbox-ts` | `plexus-sandbox-ts` | Feb 4, 2026 | Commit `3c4c7fe`: terminology update. Note: `package.json` name still says `substrate-sandbox-ts` | No (GitHub 404, no Codeberg repo) |
 
-All four renames happened on the same day (Feb 4, 2026) as part of the hub -> plexus rebrand.
+All four renames happened on the same day (Feb 4, 2026) as part of the rebrand to plexus.
 
 ## Ghost Repos (no local dir, no remote — pure LocalForge cruft)
 
@@ -30,7 +30,7 @@ All 6 have `managed: false` in LocalForge. All appear to be abandoned experiment
 
 | Name | Status | Action Needed |
 |---|---|---|
-| `hub-codegen` | Exists on GitHub, missing on Codeberg | Create on Codeberg via sync |
+| `service-codegen` | Exists on GitHub, missing on Codeberg | Create on Codeberg via sync |
 
 ## Recommended Actions
 
@@ -39,8 +39,8 @@ All 6 have `managed: false` in LocalForge. All appear to be abandoned experiment
 These 10 repos should be removed from `~/.config/hyperforge/orgs/hypermemetic/repos.yaml`:
 
 **Renamed (old names):**
-- `hub-macro` (now `plexus-macros`)
-- `hub-core` (now `plexus-core`)
+- the macro crate (now `plexus-macros`)
+- the core crate (now `plexus-core`)
 - `substrate-protocol` (now `plexus-protocol`)
 - `substrate-sandbox-ts` (now `plexus-sandbox-ts`)
 
@@ -52,7 +52,7 @@ These 10 repos should be removed from `~/.config/hyperforge/orgs/hypermemetic/re
 - `plexus-axon`
 - `dockerfiles`
 
-### 2. Create hub-codegen on Codeberg
+### 2. Create service-codegen on Codeberg
 
 Run sync or manually create the repo.
 
@@ -62,4 +62,4 @@ Run sync or manually create the repo.
 
 ### 4. Fix plexus-core GitHub description
 
-GitHub description still says "# hub-core" — should be updated to match the new name.
+GitHub description still says the core crate's former name — should be updated to match the new name.

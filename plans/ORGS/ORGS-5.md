@@ -114,7 +114,7 @@ framing).
    fresh-create success and the already-matches success.
 4. A verifier inspecting only the event stream can distinguish all
    three outcomes (created / already matches / conflicts) without
-   reading hub source.
+   reading service source.
 5. Calling `orgs_add` with *no* `ssh` parameter and *no*
    `workspace_path`, twice in a row on the same org name, succeeds
    both times (the second as already-matches).

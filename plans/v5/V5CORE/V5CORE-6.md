@@ -1,6 +1,6 @@
 ---
 id: V5CORE-6
-title: "OrgsHub static child stub"
+title: "OrgsService static child stub"
 status: Complete
 type: implementation
 blocked_by: [V5CORE-2]
@@ -16,8 +16,8 @@ not-yet-existent namespace would force V5ORGS to edit V5CORE files.
 
 ## Required behavior
 
-Register **one** static child on `HyperforgeHub` at the path segment
-`orgs`, pointing to a new activation named `OrgsHub`. `OrgsHub` declares:
+Register **one** static child on `HyperforgeService` at the path segment
+`orgs`, pointing to a new activation named `OrgsService`. `OrgsService` declares:
 
 - zero methods
 - zero children
@@ -32,16 +32,16 @@ Edge cases:
 
 ## What must NOT change
 
-- The root `HyperforgeHub` method set (still exactly `status` after V5CORE-5 lands).
-- The other two hub namespaces — `repos` and `workspaces` — are owned by V5CORE-7 and V5CORE-8 respectively.
-- v4's `OrgsHub` (different crate, different port) remains untouched.
+- The root `HyperforgeService` method set (still exactly `status` after V5CORE-5 lands).
+- The other two service namespaces — `repos` and `workspaces` — are owned by V5CORE-7 and V5CORE-8 respectively.
+- v4's `OrgsService` (different crate, different port) remains untouched.
 
 ## Acceptance criteria
 
-1. Schema introspection of the v5 daemon shows a child of `HyperforgeHub` at path segment `orgs`.
+1. Schema introspection of the v5 daemon shows a child of `HyperforgeService` at path segment `orgs`.
 2. The `orgs` node's method list is empty.
 3. The `orgs` node's child list is empty.
-4. The activation backing `orgs` is named `OrgsHub` in the schema.
+4. The activation backing `orgs` is named `OrgsService` in the schema.
 5. Invoking `hf_cmd orgs does_not_exist` emits an error event; no panic or daemon crash.
 
 ## Completion

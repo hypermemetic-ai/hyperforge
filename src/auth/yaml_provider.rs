@@ -51,7 +51,7 @@ impl AuthProvider for YamlAuthProvider {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(anyhow::anyhow!(
-                    "Secrets file not found at {}. Run the secrets hub to configure tokens.",
+                    "Secrets file not found at {}. Run the secrets service to configure tokens.",
                     self.secrets_path.display()
                 ));
             }

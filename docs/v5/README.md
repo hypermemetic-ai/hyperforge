@@ -17,7 +17,7 @@ As of this writing, 59 tickets across the seven epics are Complete:
 
 | Epic | Surface |
 |---|---|
-| V5CORE | crate scaffold, config loaders, embedded secret store, three child hubs, test harness |
+| V5CORE | crate scaffold, config loaders, embedded secret store, three child services, test harness |
 | V5ORGS | `orgs.{list,get,create,update,delete,set_credential,remove_credential}` |
 | V5REPOS | `repos.{list,get,add,remove,add_remote,remove_remote,sync,push}` + `ForgePort` trait + GitHub/Codeberg/GitLab adapters |
 | V5WS | `workspaces.{list,get,create,delete,add_repo,remove_repo,reconcile,sync}` |
@@ -34,10 +34,10 @@ CLI ergonomics, and the build/release pipeline. v4 still owns those.
 
 - [Getting started](./getting-started.md) — install, add an org, create
   a workspace, sync.
-- [Methods reference](./methods.md) — every shipped RPC method by hub
+- [Methods reference](./methods.md) — every shipped RPC method by service
   with parameters and the events it emits.
 - [Architecture](./architecture.md) — `ops::` layer, `ForgePort`,
-  `SecretResolver`, how a hub method translates into ops calls.
+  `SecretResolver`, how a service method translates into ops calls.
 - [Data model](./data-model.md) — strong types, on-disk YAML shapes,
   `.hyperforge/config.toml`.
 - [v4 vs v5](./v4-vs-v5.md) — what changed, why no migration tool exists.

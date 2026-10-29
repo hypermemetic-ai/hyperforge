@@ -1,7 +1,7 @@
 //! HYPERFORGE-23: a crate chain through the activation — `build.package_diff`,
 //! `build.bump` and `build.publish` over a workspace of temp repos, against a
 //! registry on disk (`HYPERFORGE_CRATES_INDEX` / `HYPERFORGE_CRATES_DL` as
-//! `file://` directories). Everything goes through `HyperforgeHub` by dotted
+//! `file://` directories). Everything goes through `HyperforgeService` by dotted
 //! method path, as synapse sends it.
 //!
 //! The chain: `hf23t-client` + `hf23t-macros` (one cargo workspace, repo
@@ -13,12 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use futures::StreamExt;
-use hyperforge::v5::hub::HyperforgeHub;
+use hyperforge::v5::service::HyperforgeService;
 use plexus_core::plexus::{Activation, PlexusStreamItem};
 use serde_json::{json, Value};
 
-async fn call(hub: &HyperforgeHub, method: &str, params: Value) -> Vec<Value> {
-    let mut stream = hub
+async fn call(service: &HyperforgeService, method: &str, params: Value) -> Vec<Value> {
+    let mut stream = service
         .call(method, params, None, None)
         .await
         .unwrap_or_else(|e| panic!("{method}: {e:?}"));
@@ -77,7 +77,7 @@ fn registry() -> PathBuf {
         };
         crate_file("hf23t-core", &[("Cargo.toml.orig", &core_manifest()), ("src/lib.rs", LIB)]);
         crate_file("hf23t-macros", &[("src/lib.rs", "pub fn f() -> u32 { 0 }\n")]);
-        // Set once, before any hub reads it; every test uses the same value.
+        // Set once, before any service reads it; every test uses the same value.
         std::env::set_var("HYPERFORGE_CRATES_INDEX", format!("file://{}", root.join("index").display()));
         std::env::set_var("HYPERFORGE_CRATES_DL", format!("file://{}", root.join("dl").display()));
         root
@@ -145,8 +145,8 @@ const APP_STEP: &str = "[publish]\ncrates = [\"hf23t-api\", \"hf23t-app\"]\ndry_
 async fn package_diff_reads_the_registry_and_the_published_source() {
     let t = tempfile::tempdir().unwrap();
     let (_ws, config) = fixture(t.path(), APP_STEP);
-    let hub = HyperforgeHub::new(config);
-    let ev = call(&hub, "build.package_diff", json!({"name": "chain", "include": ["hf23t-*"]})).await;
+    let service = HyperforgeService::new(config);
+    let ev = call(&service, "build.package_diff", json!({"name": "chain", "include": ["hf23t-*"]})).await;
     let state = |n: &str| {
         of_type(&ev, "crate_state")
             .into_iter()
@@ -165,7 +165,7 @@ async fn package_diff_reads_the_registry_and_the_published_source() {
     assert!(pos("hf23t-client") < pos("hf23t-core") && pos("hf23t-macros") < pos("hf23t-core"));
     assert!(pos("hf23t-core") < pos("hf23t-api"));
     // The refs form is still the manifests' diff.
-    let ev = call(&hub, "build.package_diff", json!({"name": "chain", "from_ref": "HEAD"})).await;
+    let ev = call(&service, "build.package_diff", json!({"name": "chain", "from_ref": "HEAD"})).await;
     assert_eq!(of_type(&ev, "error")[0]["code"], "validation");
 }
 
@@ -173,22 +173,22 @@ async fn package_diff_reads_the_registry_and_the_published_source() {
 async fn bump_moves_members_and_requirements_one_commit_per_repo() {
     let t = tempfile::tempdir().unwrap();
     let (ws, config) = fixture(t.path(), APP_STEP);
-    let hub = HyperforgeHub::new(config);
+    let service = HyperforgeService::new(config);
     let params = |dry: bool| json!({"name": "chain", "include": ["hf23t-client", "hf23t-macros", "hf23t-core"], "bump": "patch", "dry_run": dry});
 
     // A dry run writes nothing.
-    let ev = call(&hub, "build.bump", params(true)).await;
+    let ev = call(&service, "build.bump", params(true)).await;
     assert_eq!(of_type(&ev, "crate_bumped").len(), 3, "{ev:#?}");
     assert!(std::fs::read_to_string(ws.join("core/Cargo.toml")).unwrap().contains("version = \"0.6.0\""));
 
     // A dirty manifest refuses the whole bump.
     write(&ws.join("core/Cargo.toml"), &format!("{}# local edit\n", core_manifest()));
-    let ev = call(&hub, "build.bump", params(false)).await;
+    let ev = call(&service, "build.bump", params(false)).await;
     assert_eq!(of_type(&ev, "error")[0]["code"], "dirty", "{ev:#?}");
     assert!(std::fs::read_to_string(ws.join("macros/Cargo.toml")).unwrap().contains("version = \"0.6.0\""));
     git(&ws.join("core"), &["checkout", "--", "Cargo.toml"]);
 
-    let ev = call(&hub, "build.bump", params(false)).await;
+    let ev = call(&service, "build.bump", params(false)).await;
     assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
     let core = std::fs::read_to_string(ws.join("core/Cargo.toml")).unwrap();
     assert!(core.contains("version = \"0.6.1\"\n"), "{core}");
@@ -214,7 +214,7 @@ async fn bump_moves_members_and_requirements_one_commit_per_repo() {
     assert!(std::fs::read_to_string(ws.join("sibling/Cargo.toml")).unwrap().contains("hf23t-macros = \"0.5\"\n"));
 
     // A minor bump breaks "0.6" outside the set: the sibling follows.
-    let ev = call(&hub, "build.bump", json!({"name": "chain", "include": ["hf23t-core"], "bump": "minor"})).await;
+    let ev = call(&service, "build.bump", json!({"name": "chain", "include": ["hf23t-core"], "bump": "minor"})).await;
     assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
     let sib = std::fs::read_to_string(ws.join("sibling/Cargo.toml")).unwrap();
     assert!(sib.contains("hf23t-core = { path = \"../core\", version = \"0.7.0\" }"), "{sib}");
@@ -226,10 +226,10 @@ async fn publish_dry_runs_the_chain_together_then_executes_in_order() {
     let t = tempfile::tempdir().unwrap();
     let (ws, config) = fixture(t.path(), APP_STEP);
     std::env::set_var("CARGO_TARGET_DIR", t.path().join("target"));
-    let hub = HyperforgeHub::with_state_dir(config, &t.path().join("state"));
+    let service = HyperforgeService::with_state_dir(config, &t.path().join("state"));
 
     // core 0.6.0 is on the registry (skipped); the rest are not.
-    let ev = call(&hub, "build.publish", json!({"name": "chain", "include": ["hf23t-app"]})).await;
+    let ev = call(&service, "build.publish", json!({"name": "chain", "include": ["hf23t-app"]})).await;
     let plan: Vec<(String, String)> = of_type(&ev, "publish_planned")
         .iter()
         .map(|e| (e["name"].as_str().unwrap().to_string(), e["action"].as_str().unwrap().to_string()))
@@ -263,13 +263,13 @@ async fn publish_dry_runs_the_chain_together_then_executes_in_order() {
 
     // Execute refuses a dirty crate before anything runs.
     write(&ws.join("app/api/src/extra.rs"), "");
-    let ev = call(&hub, "build.publish", json!({"name": "chain", "include": ["hf23t-a*"], "closure": false, "execute": true})).await;
+    let ev = call(&service, "build.publish", json!({"name": "chain", "include": ["hf23t-a*"], "closure": false, "execute": true})).await;
     assert_eq!(of_type(&ev, "error")[0]["code"], "dirty", "{ev:#?}");
     assert!(of_type(&ev, "publish_group").is_empty());
     std::fs::remove_file(ws.join("app/api/src/extra.rs")).unwrap();
 
     // Execute: the dry runs again, then the step for real; the crates tagged.
-    let ev = call(&hub, "build.publish", json!({"name": "chain", "include": ["hf23t-a*"], "closure": false, "execute": true})).await;
+    let ev = call(&service, "build.publish", json!({"name": "chain", "include": ["hf23t-a*"], "closure": false, "execute": true})).await;
     assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
     let phases: Vec<&str> = of_type(&ev, "publish_group").iter().filter(|g| g["state"] == "ok").map(|g| g["phase"].as_str().unwrap()).collect();
     assert_eq!(phases, ["dry_run", "execute"]);
@@ -284,8 +284,8 @@ async fn a_failed_dry_run_publishes_nothing() {
     let t = tempfile::tempdir().unwrap();
     let step = "[publish]\ndry_run = \"echo broken >&2; exit 3\"\nexecute = \"touch ../executed\"\n";
     let (ws, config) = fixture(t.path(), step);
-    let hub = HyperforgeHub::with_state_dir(config, &t.path().join("state"));
-    let ev = call(&hub, "build.publish", json!({"name": "chain", "include": ["hf23t-app"], "closure": false, "execute": true})).await;
+    let service = HyperforgeService::with_state_dir(config, &t.path().join("state"));
+    let ev = call(&service, "build.publish", json!({"name": "chain", "include": ["hf23t-app"], "closure": false, "execute": true})).await;
     let e = of_type(&ev, "error");
     assert_eq!(e[0]["code"], "dry_run_failed", "{ev:#?}");
     let failed = of_type(&ev, "publish_group").into_iter().find(|g| g["state"] == "failed").unwrap();
@@ -293,6 +293,6 @@ async fn a_failed_dry_run_publishes_nothing() {
     assert!(!ws.join("executed").exists());
     assert_eq!(of_type(&ev, "publish_summary")[0]["published"], json!([]));
     // include is required.
-    let ev = call(&hub, "build.publish", json!({"name": "chain"})).await;
+    let ev = call(&service, "build.publish", json!({"name": "chain"})).await;
     assert_eq!(of_type(&ev, "error")[0]["code"], "validation");
 }

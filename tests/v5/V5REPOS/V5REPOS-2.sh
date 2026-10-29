@@ -17,7 +17,7 @@ hf_load_fixture empty
 schema=$(hf_cmd __schema__ 2>/dev/null || hf_cmd)
 
 # The capability must be discoverable and name exactly the four fields.
-# Implementers may surface it under a sub-hub of repos or via a typed
+# Implementers may surface it under a sub-service of repos or via a typed
 # schema record. The assertion targets the field set, not its location.
 echo "$schema" | hf_assert_event '(.type == "capability" or .type == "forge_port_schema")
   and ((.fields // [] | sort) == ["archived","default_branch","description","visibility"])'

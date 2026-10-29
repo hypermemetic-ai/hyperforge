@@ -1,6 +1,6 @@
-//! `SecretsHub` — V5PARITY-7. Wire surface for the secret store.
+//! `SecretsService` — V5PARITY-7. Wire surface for the secret store.
 //!
-//! Child activation on `HyperforgeHub`. Methods write/list/delete
+//! Child activation on `HyperforgeService`. Methods write/list/delete
 //! `secrets://...` refs in `$HF_CONFIG/secrets.yaml`. Resolved values
 //! NEVER appear in any event payload — D9 secret-redaction rule.
 
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::v5::secrets::{SecretRef, YamlSecretStore};
 
-/// Per-hub event surface.
+/// Per-service event surface.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SecretsEvent {
@@ -43,11 +43,11 @@ pub enum SecretsEvent {
 }
 
 #[derive(Clone)]
-pub struct SecretsHub {
+pub struct SecretsService {
     config_dir: PathBuf,
 }
 
-impl SecretsHub {
+impl SecretsService {
     #[must_use]
     pub const fn new(config_dir: PathBuf) -> Self {
         Self { config_dir }
@@ -59,7 +59,7 @@ impl SecretsHub {
     description = "v5 secret store wire surface (V5PARITY-7)",
     crate_path = "plexus_core"
 )]
-impl SecretsHub {
+impl SecretsService {
     /// Write or replace a secret. Returns the key + masked length.
     #[plexus_macros::method(params(
         key = "secrets://<path> reference",

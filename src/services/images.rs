@@ -1,6 +1,6 @@
-//! `ImagesHub` — Container image management subactivation
+//! `ImagesService` — Container image management subactivation
 //!
-//! A child plugin under `RepoHub`, accessible as:
+//! A child plugin under `RepoService`, accessible as:
 //!   synapse lforge hyperforge repo images list --org foo --name bar
 //!   synapse lforge hyperforge repo images delete --org foo --name bar --tag v1.0
 
@@ -13,17 +13,17 @@ use crate::adapters::registry::codeberg::CodebergRegistryAdapter;
 use crate::adapters::registry::github::GitHubRegistryAdapter;
 use crate::adapters::registry::RegistryPort;
 use crate::auth::YamlAuthProvider;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::HyperforgeState;
+use crate::service::HyperforgeEvent;
+use crate::services::HyperforgeState;
 use crate::types::Forge;
 
-/// Sub-hub for container image operations
+/// Sub-service for container image operations
 #[derive(Clone)]
-pub struct ImagesHub {
+pub struct ImagesService {
     state: HyperforgeState,
 }
 
-impl ImagesHub {
+impl ImagesService {
     pub const fn new(state: HyperforgeState) -> Self {
         Self { state }
     }
@@ -56,7 +56,7 @@ fn make_auth() -> Result<Arc<YamlAuthProvider>, String> {
     description = "Container image management: list, delete, push",
     crate_path = "plexus_core"
 )]
-impl ImagesHub {
+impl ImagesService {
     /// List container image tags for a repo on its configured forges
     #[plexus_macros::method(
         description = "List container image tags for a repository",

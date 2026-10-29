@@ -1,6 +1,6 @@
 ---
 id: V5CORE-8
-title: "WorkspacesHub static child stub"
+title: "WorkspacesService static child stub"
 status: Complete
 type: implementation
 blocked_by: [V5CORE-2]
@@ -15,9 +15,9 @@ child before V5WS-1 promotes.
 
 ## Required behavior
 
-Register **one** static child on `HyperforgeHub` at path segment
-`workspaces`, pointing to a new activation named `WorkspacesHub`.
-`WorkspacesHub` declares:
+Register **one** static child on `HyperforgeService` at path segment
+`workspaces`, pointing to a new activation named `WorkspacesService`.
+`WorkspacesService` declares:
 
 - zero methods
 - zero children
@@ -31,16 +31,16 @@ Edge cases:
 
 ## What must NOT change
 
-- `HyperforgeHub`'s existing method set.
+- `HyperforgeService`'s existing method set.
 - The `orgs` and `repos` child namespaces (owned by V5CORE-6 and V5CORE-7).
-- v4's `WorkspaceHub` on the v4 crate/port.
+- v4's `WorkspaceService` on the v4 crate/port.
 
 ## Acceptance criteria
 
-1. Schema introspection shows a child of `HyperforgeHub` at path segment `workspaces`.
+1. Schema introspection shows a child of `HyperforgeService` at path segment `workspaces`.
 2. The `workspaces` node's method list is empty.
 3. The `workspaces` node's child list is empty.
-4. The activation backing `workspaces` is named `WorkspacesHub` in the schema.
+4. The activation backing `workspaces` is named `WorkspacesService` in the schema.
 5. Invoking `hf_cmd workspaces does_not_exist` emits an error event; no panic or daemon crash.
 
 ## Completion

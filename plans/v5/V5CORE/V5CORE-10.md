@@ -19,7 +19,7 @@ CORE user stories — no new behavior, just aggregation.
 |---|---|---|
 | U1 | "The v5 daemon starts cleanly on port 44105 without touching v4." | `tests/v5/V5CORE/V5CORE-2.sh` |
 | U2 | "`hyperforge status` returns version and config_dir via synapse." | `tests/v5/V5CORE/V5CORE-5.sh` |
-| U3 | "The three child hubs (orgs, repos, workspaces) are discoverable in schema with zero methods each." | `tests/v5/V5CORE/V5CORE-6.sh`, `V5CORE-7.sh`, `V5CORE-8.sh` |
+| U3 | "The three child services (orgs, repos, workspaces) are discoverable in schema with zero methods each." | `tests/v5/V5CORE/V5CORE-6.sh`, `V5CORE-7.sh`, `V5CORE-8.sh` |
 | U4 | "Every config fixture round-trips losslessly." | `tests/v5/V5CORE/V5CORE-3.sh` |
 | U5 | "A `secrets://` reference resolves through the embedded secret store." | `tests/v5/V5CORE/V5CORE-4.sh` |
 | U6 | "The shared test harness spawns, runs, and tears down a daemon cleanly." | `tests/v5/V5CORE/V5CORE-9.sh` |

@@ -10,7 +10,7 @@ Enable hyperforge to build, package, and distribute pre-built binaries across mu
 |--------|--------|-------------|
 | DIST-2 | **DONE** | ReleasePort trait + GitHub/Codeberg adapters |
 | DIST-3 | **DONE** | Binary target detection from Cargo.toml/.cabal |
-| DIST-4 | **DONE** | ReleasesHub subactivation (list/create/upload/delete/assets) |
+| DIST-4 | **DONE** | ReleasesService subactivation (list/create/upload/delete/assets) |
 | DIST-5 | **DONE** | Cross-compile engine + tar.gz packaging |
 | DIST-6 | **DONE** | `build release` all-in-one orchestrator |
 | DIST-7 | **DONE** | Homebrew formula generation |
@@ -20,7 +20,7 @@ Enable hyperforge to build, package, and distribute pre-built binaries across mu
 
 ## Context
 
-Today hyperforge can publish **source packages** (crates.io via `package_publish`, Hackage via `package_publish`) and **container images** (ghcr.io/codeberg via `ImagesHub`). DIST adds **pre-built binary distribution**.
+Today hyperforge can publish **source packages** (crates.io via `package_publish`, Hackage via `package_publish`) and **container images** (ghcr.io/codeberg via `ImagesService`). DIST adds **pre-built binary distribution**.
 
 ### Language-specific considerations
 
@@ -34,7 +34,7 @@ Today hyperforge can publish **source packages** (crates.io via `package_publish
 ```
 DIST-2 (ReleasePort trait + adapters)         ✅
   │
-  ├──► DIST-4 (ReleasesHub subactivation)     ✅
+  ├──► DIST-4 (ReleasesService subactivation)     ✅
   │      │
   │      ├──► DIST-7 (Homebrew formulas)      ✅
   │      └──► DIST-8 (Binstall metadata)      ✅

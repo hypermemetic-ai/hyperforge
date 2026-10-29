@@ -7,7 +7,7 @@ on paper but not in code.
 Invoke pattern:
 
 ```bash
-synapse -P 44105 lforge-v5 hyperforge <hub> <method> --<param> <value> ...
+synapse -P 44105 lforge-v5 hyperforge <service> <method> --<param> <value> ...
 ```
 
 Every event carries a `type` discriminator (D9). All enum values
@@ -16,7 +16,7 @@ method (D7). YAML writes are atomic (D8).
 
 ## Root
 
-Source: [`src/v5/hub.rs`](../../src/v5/hub.rs).
+Source: [`src/v5/service.rs`](../../src/v5/service.rs).
 
 | Method | Params | Emits |
 |---|---|---|
@@ -27,7 +27,7 @@ Source: [`src/v5/hub.rs`](../../src/v5/hub.rs).
 exists for harness reasons (V5CORE-4 acceptance #1). Production callers
 use `SecretResolver` directly.
 
-## OrgsHub
+## OrgsService
 
 Source: [`src/v5/orgs.rs`](../../src/v5/orgs.rs).
 Files at `<config_dir>/orgs/<name>.yaml`.
@@ -46,7 +46,7 @@ Files at `<config_dir>/orgs/<name>.yaml`.
 `{token, ssh_key}`. `key` MUST be a `secrets://<path>` ref or an
 absolute filesystem path; bare plaintext is rejected.
 
-## ReposHub
+## ReposService
 
 Source: [`src/v5/repos.rs`](../../src/v5/repos.rs).
 Repos live as entries inside `orgs/<org>.yaml`.
@@ -121,7 +121,7 @@ to walk. Already-registered repos are counted as skipped.
 These shell out to the user's `git` CLI through `ops::git` so SSH
 agents, credential helpers, and hooks all flow through unchanged.
 
-## WorkspacesHub
+## WorkspacesService
 
 Source: [`src/v5/workspaces.rs`](../../src/v5/workspaces.rs).
 Files at `<config_dir>/workspaces/<name>.yaml`.

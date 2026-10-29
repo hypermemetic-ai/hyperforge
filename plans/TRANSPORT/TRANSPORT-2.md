@@ -112,7 +112,7 @@ is re-migrated.
 
 ## Completion
 
-- New method(s) added to the `repo` subhub; `repo init` gains a
+- New method(s) added to the `repo` subservice; `repo init` gains a
   transport flag.
 - Integration tests added.
 - README and `~/.claude/skills/hyperforge/SKILL.md` cheatsheets document

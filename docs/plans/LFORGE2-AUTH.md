@@ -8,7 +8,7 @@
 
 ## Overview
 
-Authentication is handled as a **remote service** via the **auth-hub plugin**. All plugins (including hyperforge) interface with auth through a common abstraction. This allows the backend implementation (WorkOS, local keychain, etc.) to be swapped without changing plugin code.
+Authentication is handled as a **remote service** via the **auth-service plugin**. All plugins (including hyperforge) interface with auth through a common abstraction. This allows the backend implementation (WorkOS, local keychain, etc.) to be swapped without changing plugin code.
 
 **Key principle**: Always request tokens under **org scope** - `{forge|registry}/{org}/*`
 
@@ -18,7 +18,7 @@ Authentication is handled as a **remote service** via the **auth-hub plugin**. A
 
 ### The Auth Plugin Protocol
 
-Every hub system component uses this interface to request secrets:
+Every service system component uses this interface to request secrets:
 
 ```rust
 #[async_trait]
@@ -92,7 +92,7 @@ impl AuthClient {
         // 2. Determine required scope from path
         let scope = path.parent_scope();  // "github/alice/*"
 
-        // 3. Request scope from auth-hub
+        // 3. Request scope from auth-service
         // [BLACK BOX: How scope is requested/granted is implementation detail]
         let access_token = self.request_scope(scope).await?;
 
@@ -542,7 +542,7 @@ impl Hyperforge {
                 }
                 Err(AuthError::Timeout) => {
                     eprintln!("✗ Auth request timed out");
-                    eprintln!("  Check auth-hub is running");
+                    eprintln!("  Check auth-service is running");
                     continue;
                 }
                 Err(e) => return Err(e.into()),
@@ -562,7 +562,7 @@ impl Hyperforge {
 
 ## Auth Plugin RPC Protocol (Implementation Hole)
 
-The auth abstraction communicates with auth-hub via **[TO BE DEFINED]** protocol.
+The auth abstraction communicates with auth-service via **[TO BE DEFINED]** protocol.
 
 ### Options (TBD):
 
@@ -570,7 +570,7 @@ The auth abstraction communicates with auth-hub via **[TO BE DEFINED]** protocol
 2. **HTTP/REST** - Simple, widespread, but verbose
 3. **MessagePack RPC** - Compact, fast
 4. **Unix socket** - Local-only, very fast
-5. **Hub-native RPC** - Leverage substrate's built-in RPC
+5. **Service-native RPC** - Leverage substrate's built-in RPC
 
 ### Interface (regardless of protocol):
 
@@ -601,9 +601,9 @@ Response:
 
 ---
 
-## Auth Hub Backend (Implementation Hole)
+## Auth Service Backend (Implementation Hole)
 
-How auth-hub actually manages scopes and secrets is **[TO BE DEFINED]**.
+How auth-service actually manages scopes and secrets is **[TO BE DEFINED]**.
 
 ### Possible implementations:
 
@@ -738,7 +738,7 @@ pub enum AuthError {
 ```
 AUTH-1: Auth abstraction (trait, types)
    ↓
-AUTH-2: Auth client implementation (RPC to auth-hub)
+AUTH-2: Auth client implementation (RPC to auth-service)
    ↓
 LFORGE2-2: Core hyperforge types
    ↓
@@ -770,7 +770,7 @@ PKG-10: Publish command (NEEDS auth for registry tokens)
 
 ### What's Deferred (Implementation Holes):
 
-⏸ **RPC protocol** - How auth client talks to auth-hub
+⏸ **RPC protocol** - How auth client talks to auth-service
 ⏸ **Backend implementation** - WorkOS vs local vs multi
 ⏸ **Scope granting** - Auto vs user approval vs policy
 ⏸ **Master token management** - Login flow, refresh
@@ -782,9 +782,9 @@ PKG-10: Publish command (NEEDS auth for registry tokens)
 1. **Implement AUTH-1**: Auth abstraction (trait + types)
 2. **Stub AUTH-2**: Auth client with mock backend
 3. **Build LFORGE2-2, 3, 4**: Core hyperforge (no auth)
-4. **Implement AUTH-2 fully**: Real RPC to auth-hub
+4. **Implement AUTH-2 fully**: Real RPC to auth-service
 5. **Build LFORGE2-7**: Push command (uses auth)
-6. **Implement auth-hub backend**: WorkOS or local
+6. **Implement auth-service backend**: WorkOS or local
 
 ---
 
@@ -810,4 +810,4 @@ PKG-10: Publish command (NEEDS auth for registry tokens)
    - Environment variable with master token?
    - Different backend for CI vs local?
 
-**Answers deferred** - auth-hub implementation will address these.
+**Answers deferred** - auth-service implementation will address these.

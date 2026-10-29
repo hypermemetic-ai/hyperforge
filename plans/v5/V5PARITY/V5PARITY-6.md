@@ -21,7 +21,7 @@ Three ForgePort lifecycle operations v4 surfaces as first-class methods are curr
 
 `set_default_branch` and `set_archived` on the trait are already reachable via `write_metadata` with the corresponding `DriftFieldKind`; this ticket does NOT add distinct trait methods for those.
 
-**RPC methods on ReposHub (thin wrappers):**
+**RPC methods on ReposService (thin wrappers):**
 
 | Method | Behavior |
 |---|---|
@@ -29,7 +29,7 @@ Three ForgePort lifecycle operations v4 surfaces as first-class methods are curr
 | `repos.set_default_branch --org X --name N --branch B` | `ops::repo::write_metadata_on_forge` with `{default_branch: B}` + mirrors to local `RepoMetadataLocal.default_branch` |
 | `repos.set_archived --org X --name N --archived true\|false` | same pattern, `archived` field |
 
-**WorkspacesHub methods:**
+**WorkspacesService methods:**
 
 | Method | Behavior |
 |---|---|

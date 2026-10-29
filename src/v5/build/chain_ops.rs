@@ -13,7 +13,7 @@ use std::process::Stdio;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::chain::{self, Chain, Registry};
-use crate::v5::build_hub::BuildEvent;
+use crate::v5::build_service::BuildEvent;
 
 type Tx = UnboundedSender<BuildEvent>;
 

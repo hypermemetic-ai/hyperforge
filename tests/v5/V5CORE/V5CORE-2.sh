@@ -9,11 +9,11 @@ hf_spawn
 # Registry shows lforge-v5 on our port.
 synapse -P "$HF_PORT" list | hf_assert_event '.name == "lforge-v5"'
 
-# Schema introspection: root HyperforgeHub has zero methods and zero children
+# Schema introspection: root HyperforgeService has zero methods and zero children
 # at the V5CORE-2 baseline. (This script is the V5CORE-2 acceptance — later
 # tickets add status / stubs and adjust their own scripts accordingly.)
 schema=$(hf_cmd __schema__ 2>/dev/null || hf_cmd)
-echo "$schema" | hf_assert_event '.activation == "HyperforgeHub"'
+echo "$schema" | hf_assert_event '.activation == "HyperforgeService"'
 
 # Port-already-bound: spawning a second daemon on the same explicit port
 # must exit non-zero and name the port on stderr.

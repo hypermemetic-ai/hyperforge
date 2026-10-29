@@ -1,11 +1,11 @@
-//! Shared helpers used by both `WorkspaceHub` and `BuildHub`.
+//! Shared helpers used by both `WorkspaceService` and `BuildService`.
 
 use std::sync::Arc;
 
 use crate::adapters::{CodebergAdapter, ForgePort, GitHubAdapter, GitLabAdapter};
 use crate::auth::YamlAuthProvider;
 use crate::config::HyperforgeConfig;
-use crate::hub::HyperforgeEvent;
+use crate::service::HyperforgeEvent;
 use crate::types::{Forge, OwnerType};
 
 /// Create a forge adapter from a forge name string.

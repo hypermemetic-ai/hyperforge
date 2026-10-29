@@ -1,4 +1,4 @@
-//! Auth Hub - Simple secret management plugin
+//! Auth Service - Simple secret management plugin
 //!
 //! Provides basic secret storage using YAML files.
 //! Secrets are stored at ~/.config/hyperforge/secrets.yaml
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use storage::{StorageError, YamlStorage};
 use types::{Secret, SecretPath};
 
-/// Auth hub events
+/// Auth service events
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthEvent {
@@ -41,14 +41,14 @@ pub enum AuthEvent {
     Error { message: String },
 }
 
-/// Auth Hub - manages secrets in YAML storage
+/// Auth Service - manages secrets in YAML storage
 #[derive(Clone)]
-pub struct AuthHub {
+pub struct AuthService {
     storage: Arc<YamlStorage>,
 }
 
-impl AuthHub {
-    /// Create a new auth hub with default storage location
+impl AuthService {
+    /// Create a new auth service with default storage location
     pub async fn new() -> Result<Self, StorageError> {
         let storage = YamlStorage::default_location()?;
 
@@ -60,7 +60,7 @@ impl AuthHub {
         })
     }
 
-    /// Create auth hub with custom storage location
+    /// Create auth service with custom storage location
     pub async fn with_storage(storage: YamlStorage) -> Result<Self, StorageError> {
         storage.load().await?;
         Ok(Self {
@@ -75,7 +75,7 @@ impl AuthHub {
     description = "Simple secret management with YAML storage",
     crate_path = "plexus_core"
 )]
-impl AuthHub {
+impl AuthService {
     /// Get a secret by path
     #[plexus_macros::method(
         description = "Get a secret by path",
@@ -214,27 +214,27 @@ mod tests {
     use tempfile::TempDir;
     
 
-    /// Test hub factory.
+    /// Test service factory.
     ///
     /// Referenced only by the commented-out `test_set_and_get_secret`,
     /// `test_list_secrets`, and `test_delete_secret` tests below (pending a
-    /// stream-Unpin fix in `AuthHub`). Kept for when those tests are restored
+    /// stream-Unpin fix in `AuthService`). Kept for when those tests are restored
     /// (tracked by HF-TESTS — see commit body).
     #[allow(dead_code)]
-    async fn create_test_hub() -> (AuthHub, TempDir) {
+    async fn create_test_service() -> (AuthService, TempDir) {
         let temp = TempDir::new().unwrap();
         let storage = YamlStorage::new(temp.path().join("secrets.yaml"));
-        let hub = AuthHub::with_storage(storage).await.unwrap();
-        (hub, temp)
+        let service = AuthService::with_storage(storage).await.unwrap();
+        (service, temp)
     }
 
     /* Commented out: stream does not implement Unpin, cannot use .next().await directly
     #[tokio::test]
     async fn test_set_and_get_secret() {
-        let (hub, _temp) = create_test_hub().await;
+        let (service, _temp) = create_test_service().await;
 
         // Set a secret
-        let mut set_stream = hub.set_secret("github/alice/token".to_string(), "ghp_xxx".to_string()).await;
+        let mut set_stream = service.set_secret("github/alice/token".to_string(), "ghp_xxx".to_string()).await;
         while let Some(event) = set_stream.next().await {
             match event {
                 AuthEvent::Success { .. } => {}
@@ -244,7 +244,7 @@ mod tests {
         }
 
         // Get it back
-        let mut get_stream = hub.get_secret("github/alice/token".to_string()).await;
+        let mut get_stream = service.get_secret("github/alice/token".to_string()).await;
         let mut found = false;
         while let Some(event) = get_stream.next().await {
             match event {
@@ -263,15 +263,15 @@ mod tests {
     /* Commented out: stream does not implement Unpin, cannot use .next().await directly
     #[tokio::test]
     async fn test_list_secrets() {
-        let (hub, _temp) = create_test_hub().await;
+        let (service, _temp) = create_test_service().await;
 
         // Set multiple secrets
-        hub.set_secret("github/alice/token".to_string(), "ghp_xxx".to_string()).await;
-        hub.set_secret("github/bob/token".to_string(), "ghp_yyy".to_string()).await;
-        hub.set_secret("codeberg/alice/token".to_string(), "cb_zzz".to_string()).await;
+        service.set_secret("github/alice/token".to_string(), "ghp_xxx".to_string()).await;
+        service.set_secret("github/bob/token".to_string(), "ghp_yyy".to_string()).await;
+        service.set_secret("codeberg/alice/token".to_string(), "cb_zzz".to_string()).await;
 
         // List github secrets
-        let mut list_stream = hub.list_secrets("github/".to_string()).await;
+        let mut list_stream = service.list_secrets("github/".to_string()).await;
         let mut count = 0;
         while let Some(event) = list_stream.next().await {
             match event {
@@ -290,13 +290,13 @@ mod tests {
     /* Commented out: stream does not implement Unpin, cannot use .next().await directly
     #[tokio::test]
     async fn test_delete_secret() {
-        let (hub, _temp) = create_test_hub().await;
+        let (service, _temp) = create_test_service().await;
 
         // Set a secret
-        hub.set_secret("github/alice/token".to_string(), "ghp_xxx".to_string()).await;
+        service.set_secret("github/alice/token".to_string(), "ghp_xxx".to_string()).await;
 
         // Delete it
-        let mut delete_stream = hub.delete_secret("github/alice/token".to_string()).await;
+        let mut delete_stream = service.delete_secret("github/alice/token".to_string()).await;
         while let Some(event) = delete_stream.next().await {
             match event {
                 AuthEvent::Success { .. } => {}
@@ -306,7 +306,7 @@ mod tests {
         }
 
         // Try to get it (should fail)
-        let mut get_stream = hub.get_secret("github/alice/token".to_string()).await;
+        let mut get_stream = service.get_secret("github/alice/token".to_string()).await;
         let mut got_error = false;
         while let Some(event) = get_stream.next().await {
             match event {

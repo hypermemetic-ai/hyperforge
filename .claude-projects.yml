@@ -4,9 +4,9 @@ projects:
     path: ../hyperforge
     branch: feat/lforge2-redesign
     main: true
-  hub-core:
-    path: ../hub-core
-  hub-macro:
-    path: ../hub-macro
-  hub-transport:
-    path: ../hub-transport
+  plexus-core:
+    path: ../plexus-core
+  plexus-macros:
+    path: ../plexus-macros
+  plexus-transport:
+    path: ../plexus-transport

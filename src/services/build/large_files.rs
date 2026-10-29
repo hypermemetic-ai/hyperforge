@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::commands::runner::discover_or_bail;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::RepoFilter;
+use crate::service::HyperforgeEvent;
+use crate::services::utils::RepoFilter;
 
 /// A large file found in a repo.
 pub struct LargeFileEntry {

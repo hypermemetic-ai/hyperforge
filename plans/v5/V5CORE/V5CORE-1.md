@@ -10,8 +10,8 @@ unlocks: [V5ORGS-1, V5REPOS-1, V5WS-1]
 ## Goal
 
 Stand up the v5 activation tree's foundation: a fresh crate wired against
-`plexus-core = "0.5"` / `plexus-macros = "0.5"`, a `HyperforgeHub` root
-with a working `status` method and three static child hub *stubs* (empty
+`plexus-core = "0.5"` / `plexus-macros = "0.5"`, a `HyperforgeService` root
+with a working `status` method and three static child service *stubs* (empty
 activations reserved for ORGS/REPOS/WS epics to flesh out), a config file
 subsystem that loads and round-trips the three YAML schemas (`config.yaml`,
 `orgs/<org>.yaml`, `workspaces/<ws>.yaml`), an embedded secret store that
@@ -37,13 +37,13 @@ When this epic is done:
 ## Dependency DAG
 
 ```
-                V5CORE-2  (crate scaffold + plexus 0.5 + empty HyperforgeHub)
+                V5CORE-2  (crate scaffold + plexus 0.5 + empty HyperforgeService)
                       │
    ┌────────┬─────────┼─────────┬─────────┬─────────┬─────────┬─────────┐
    │        │         │         │         │         │         │         │
  V5CORE-3 V5CORE-4  V5CORE-5  V5CORE-6  V5CORE-7  V5CORE-8  V5CORE-9   │
- (config  (secret   (status   (OrgsHub  (ReposHub (Workspcs (integ.    │
-  yaml     store,    method)   stub)     stub)    Hub stub) test       │
+ (config  (secret   (status   (OrgsService  (ReposService (Workspcs (integ.    │
+  yaml     store,    method)   stub)     stub)    Service stub) test       │
   loaders) secrets://                                        harness)   │
                                                                         │
    └─────────────────┬──────────────────────────────────────────────────┘
@@ -63,23 +63,23 @@ by a separate worker concurrently.
 
 | ID | Status | Summary |
 |----|--------|---------|
-| V5CORE-2  | Pending | Crate scaffold: workspace member, plexus 0.5 deps, bare HyperforgeHub, daemon binary listens on `--port` |
+| V5CORE-2  | Pending | Crate scaffold: workspace member, plexus 0.5 deps, bare HyperforgeService, daemon binary listens on `--port` |
 | V5CORE-3  | Pending | YAML config loaders: global, org, workspace — schemas + round-trip |
 | V5CORE-4  | Pending | Embedded secret store: YAML backend, `secrets://<path>` resolver trait |
-| V5CORE-5  | Pending | `HyperforgeHub::status` — returns version + config_dir, queryable via synapse |
-| V5CORE-6  | Pending | `OrgsHub` static child stub — empty activation registered on root |
-| V5CORE-7  | Pending | `ReposHub` static child stub — empty activation registered on root |
-| V5CORE-8  | Pending | `WorkspacesHub` static child stub — empty activation registered on root |
+| V5CORE-5  | Pending | `HyperforgeService::status` — returns version + config_dir, queryable via synapse |
+| V5CORE-6  | Pending | `OrgsService` static child stub — empty activation registered on root |
+| V5CORE-7  | Pending | `ReposService` static child stub — empty activation registered on root |
+| V5CORE-8  | Pending | `WorkspacesService` static child stub — empty activation registered on root |
 | V5CORE-9  | Pending | Integration test harness: ephemeral-port daemon fixture, synapse bash runner callable from Rust `#[test]` |
 | V5CORE-10 | Pending | CORE checkpoint: verify scaffolding composes (all stubs discoverable, status works, fixtures round-trip, harness self-tests) |
 
 ## Why stubs are separate tickets
 
-Splitting the three hub stubs (V5CORE-6/7/8) into individual tickets gives
+Splitting the three service stubs (V5CORE-6/7/8) into individual tickets gives
 the downstream epics (ORGS, REPOS, WS) a clean starting line — each can
 begin as soon as its corresponding stub lands, without waiting for the other
 two. It also means the "an empty child activation appears in the schema"
-contract is pinned per-hub, so when V5ORGS adds methods to `orgs`, the
+contract is pinned per-service, so when V5ORGS adds methods to `orgs`, the
 schema-shape contract doesn't drift.
 
 ## Test strategy
@@ -115,7 +115,7 @@ introduces a fixture commits it as part of its completion.
 
 ## Out of scope
 
-- Any method on `OrgsHub`, `ReposHub`, `WorkspacesHub` beyond the empty
+- Any method on `OrgsService`, `ReposService`, `WorkspacesService` beyond the empty
   stub — those are owned by the downstream epics.
 - Docs (`README.md` / skill updates) — each method-level ticket owns its
   own docs. CORE tickets produce the crate-level skeleton only.

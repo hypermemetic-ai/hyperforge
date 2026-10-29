@@ -21,7 +21,7 @@ v4 writes `core.sshCommand = ssh -i <key>` into each repo's `.git/config`, letti
 | `clear_ssh_command(dir)` | `git -C <dir> config --unset core.sshCommand` |
 | `resolve_key_for(repo, org) -> Option<FsPath>` | selects the SSH key path: per-repo override in `.hyperforge/config.toml` (when V5LIFECYCLE-9's config is in use) > org-level `CredentialEntry` with `type: ssh_key` > None |
 
-**RPC method on ReposHub:**
+**RPC method on ReposService:**
 
 | Method | Behavior |
 |---|---|

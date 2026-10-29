@@ -9,7 +9,7 @@ A single `build release` command that cross-compiles, packages, creates a forge 
 
 ## Method
 
-Added to `BuildHub` as a delegated free function in `src/hubs/build/release.rs`.
+Added to `BuildService` as a delegated free function in `src/services/build/release.rs`.
 
 ### Params
 - `path` — workspace or repo path

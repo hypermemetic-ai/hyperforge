@@ -22,7 +22,7 @@ v4 has `repo.{size, loc, large_files, dirty}` for quick repo inspection + `works
 | `large_files(dir, threshold_bytes)` | `Vec<{path, size}>` — files above threshold |
 | `repo_dirty(dir)` | reuse `ops::git::is_dirty` (added in V5PARITY-3) |
 
-**RPC methods on ReposHub:**
+**RPC methods on ReposService:**
 
 | Method | Emits |
 |---|---|

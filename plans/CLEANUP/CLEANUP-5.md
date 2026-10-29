@@ -7,7 +7,7 @@ cascades_to: []
 
 ## Problem
 
-Doctest at `src/lib.rs:15` has two stale imports from the `hub_*` -> `plexus_*` rename:
+Doctest at `src/lib.rs:15` has two stale imports from the `service_*` -> `plexus_*` rename:
 
 1. `use registry::{Registry, RegistryStorageConfig}` — should be `use plexus_registry::`
 2. `use plexus_core::plexus::Plexus` — `Plexus` type doesn't exist in plexus-core 0.3.0

@@ -1,4 +1,4 @@
-# Hyperforge: Declarative Infrastructure-as-Code Hub
+# Hyperforge: Declarative Infrastructure-as-Code Service
 
 ## Vision
 
@@ -6,14 +6,14 @@ Hyperforge should be a **pure interface to infrastructure-as-code**. Every opera
 - Local state is a cache of remote truth
 - Sync means "make remote match local" OR "make local match remote"
 - A successful sync with no changes means IAC is converged
-- All mutations flow through the hub → IAC pipeline
+- All mutations flow through the service → IAC pipeline
 
 ## Current State
 
 ### Architecture Overview
 
 ```
-HyperforgeHub (root)
+HyperforgeService (root)
 ├── OrgActivation
 │   └── OrgChildRouter (per org, dynamic)
 │       ├── ReposActivation → RepoChildRouter (per repo)
@@ -39,7 +39,7 @@ HyperforgeHub (root)
 ```
 User Command
     ↓
-Hub Method (e.g., repos.create)
+Service Method (e.g., repos.create)
     ↓
 Stage Change → staged-repos.yaml
     ↓
@@ -177,11 +177,11 @@ This returns success without doing anything.
 
 ## Target Architecture
 
-### Principle: Hub as IAC Interface
+### Principle: Service as IAC Interface
 
 ```
                     ┌─────────────────────────────────────────┐
-                    │         HyperforgeHub                   │
+                    │         HyperforgeService                   │
                     │  (Pure interface - no direct mutations) │
                     └────────────────┬────────────────────────┘
                                      │
@@ -344,7 +344,7 @@ CONVERGE(org):
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `hub.rs` | Root hub, namespace routing | ✅ Complete |
+| `service.rs` | Root service, namespace routing | ✅ Complete |
 | `activations/org/activation.rs` | Org CRUD | ✅ Complete |
 | `activations/repos/activation.rs` | Repo staging, sync | ⚠️ Gaps |
 | `activations/repos/repo_router.rs` | Per-repo operations | ❌ Stubbed |
@@ -368,7 +368,7 @@ A successful implementation means:
 6. **Idempotent**: Re-running sync shows "0 changes"
 7. **Drift**: Manual forge changes detected on next `repos.refresh`
 
-The hub becomes a pure declarative interface where:
+The service becomes a pure declarative interface where:
 - All state is derived from the IAC layer
 - All mutations flow through Pulumi
 - Local cache is always reconcilable with remote truth

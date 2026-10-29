@@ -5,8 +5,8 @@ use futures::Stream;
 use std::path::PathBuf;
 
 use crate::commands::runner::discover_or_bail;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::RepoFilter;
+use crate::service::HyperforgeEvent;
+use crate::services::utils::RepoFilter;
 
 /// Measure total tracked-file size for a single repo.
 fn measure_repo(repo_path: &std::path::Path) -> Result<(usize, u64), String> {

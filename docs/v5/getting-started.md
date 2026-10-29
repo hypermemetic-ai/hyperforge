@@ -212,5 +212,5 @@ refuse a protected repo until you flip it back.
 ## Where to go next
 
 - [Methods reference](./methods.md) for the full RPC surface.
-- [Architecture](./architecture.md) for what happens inside a hub
+- [Architecture](./architecture.md) for what happens inside a service
   method.

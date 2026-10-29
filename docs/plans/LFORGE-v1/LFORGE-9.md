@@ -232,7 +232,7 @@ Before removing each item, verify:
 
 - [ ] Remove `src/services/import.rs`
 - [ ] Remove from `src/services/mod.rs`
-- [ ] Update hub/activations to use SymmetricSyncService
+- [ ] Update service/activations to use SymmetricSyncService
 - [ ] Tests pass
 
 #### YamlStorageAdapter Removal

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use crate::commands::runner::discover_or_bail;
 use crate::git::Git;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::RepoFilter;
+use crate::service::HyperforgeEvent;
+use crate::services::utils::RepoFilter;
 
 /// Check dirty status for a single repo path.
 fn check_dirty(repo_path: &std::path::Path) -> Result<(String, bool, bool, bool), String> {

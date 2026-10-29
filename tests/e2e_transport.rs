@@ -10,9 +10,9 @@
 //! discriminators of each intermediate call.
 //!
 //! Each test spins up its own git repo inside a `tempfile::TempDir` and
-//! routes hub calls through `DynamicHub::route`, the same code path a
+//! routes service calls through `DynamicService::route`, the same code path a
 //! Synapse CLI call reaches. Config lives under the same tempdir via
-//! `HyperforgeHub::new_with_config_dir`, so tests are isolated from each
+//! `HyperforgeService::new_with_config_dir`, so tests are isolated from each
 //! other and from the developer's `~/.config/hyperforge`.
 //!
 //! The recovery scenario (TS-6) explicitly does NOT touch SSH keys,
@@ -21,8 +21,8 @@
 //! that works"; credential availability is the caller's concern.
 
 use futures::StreamExt;
-use hyperforge::{HyperforgeEvent, HyperforgeHub, Transport};
-use plexus_core::plexus::{DynamicHub, PlexusStreamItem};
+use hyperforge::{HyperforgeEvent, HyperforgeService, Transport};
+use plexus_core::plexus::{DynamicHub as DynamicService, PlexusStreamItem};
 use std::process::Command;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -31,21 +31,21 @@ use tempfile::TempDir;
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Build a hub rooted at a tempdir config dir. Returns (hub, tempdir).
-fn test_hub() -> (Arc<DynamicHub>, TempDir) {
+/// Build a service rooted at a tempdir config dir. Returns (service, tempdir).
+fn test_service() -> (Arc<DynamicService>, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let hyperforge = HyperforgeHub::new_with_config_dir(tmp.path().to_path_buf());
-    let hub = Arc::new(DynamicHub::new("testhub").register(hyperforge));
-    (hub, tmp)
+    let hyperforge = HyperforgeService::new_with_config_dir(tmp.path().to_path_buf());
+    let service = Arc::new(DynamicService::new("testservice").register(hyperforge));
+    (service, tmp)
 }
 
 /// Drain a routed stream into a vector of `HyperforgeEvent`s.
 async fn call(
-    hub: &DynamicHub,
+    service: &DynamicService,
     method: &str,
     params: serde_json::Value,
 ) -> Vec<HyperforgeEvent> {
-    let mut stream = hub.route(method, params, None).await.expect("route call");
+    let mut stream = service.route(method, params, None).await.expect("route call");
     let mut events = Vec::new();
     while let Some(item) = stream.next().await {
         if let PlexusStreamItem::Data { content, .. } = item {
@@ -92,12 +92,12 @@ fn remote_url(repo_path: &std::path::Path, name: &str) -> Option<String> {
 
 /// Run `repo status` and return the reported transport for the named forge.
 async fn reported_transport(
-    hub: &DynamicHub,
+    service: &DynamicService,
     path: &std::path::Path,
     forge: &str,
 ) -> Option<Transport> {
     let events = call(
-        hub,
+        service,
         "hyperforge.repo.status",
         serde_json::json!({ "path": path.display().to_string() }),
     )
@@ -108,9 +108,9 @@ async fn reported_transport(
     })
 }
 
-/// Init a repo with the given transport via the hub (hyperforge.repo.init).
+/// Init a repo with the given transport via the service (hyperforge.repo.init).
 async fn init_repo(
-    hub: &DynamicHub,
+    service: &DynamicService,
     path: &std::path::Path,
     forges: &str,
     org: &str,
@@ -128,7 +128,7 @@ async fn init_repo(
     if let Some(t) = transport {
         params["transport"] = serde_json::Value::String(t.to_string());
     }
-    call(hub, "hyperforge.repo.init", params).await;
+    call(service, "hyperforge.repo.init", params).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,16 +137,16 @@ async fn init_repo(
 
 #[tokio::test]
 async fn test_ts1_init_ssh() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo = fresh_repo(&tmp, "ts1");
 
-    init_repo(&hub, &repo, "github", "alice", "ts1", None).await;
+    init_repo(&service, &repo, "github", "alice", "ts1", None).await;
 
     let url = remote_url(&repo, "origin").expect("origin must exist");
     assert_eq!(url, "git@github.com:alice/ts1.git",
         "omitting transport must give today's SSH default");
 
-    let tx = reported_transport(&hub, &repo, "github").await;
+    let tx = reported_transport(&service, &repo, "github").await;
     assert_eq!(tx, Some(Transport::Ssh),
         "repo status must report Ssh for the default init");
 }
@@ -157,17 +157,17 @@ async fn test_ts1_init_ssh() {
 
 #[tokio::test]
 async fn test_ts2_init_https() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo = fresh_repo(&tmp, "ts2");
 
-    init_repo(&hub, &repo, "github", "alice", "ts2", Some("https")).await;
+    init_repo(&service, &repo, "github", "alice", "ts2", Some("https")).await;
 
     let url = remote_url(&repo, "origin").expect("origin must exist");
     assert_eq!(url, "https://github.com/alice/ts2.git",
         "--transport https must produce a plain HTTPS URL");
     assert!(!url.contains('@'), "HTTPS URL must not embed credentials");
 
-    let tx = reported_transport(&hub, &repo, "github").await;
+    let tx = reported_transport(&service, &repo, "github").await;
     assert_eq!(tx, Some(Transport::Https));
 }
 
@@ -177,17 +177,17 @@ async fn test_ts2_init_https() {
 
 #[tokio::test]
 async fn test_ts3_switch_ssh_to_https() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo = fresh_repo(&tmp, "ts3");
 
-    init_repo(&hub, &repo, "github", "alice", "ts3", None).await;
+    init_repo(&service, &repo, "github", "alice", "ts3", None).await;
     assert_eq!(
         remote_url(&repo, "origin").unwrap(),
         "git@github.com:alice/ts3.git",
     );
 
     let events = call(
-        &hub,
+        &service,
         "hyperforge.repo.set_transport",
         serde_json::json!({
             "path": repo.display().to_string(),
@@ -208,7 +208,7 @@ async fn test_ts3_switch_ssh_to_https() {
         remote_url(&repo, "origin").unwrap(),
         "https://github.com/alice/ts3.git",
     );
-    let tx = reported_transport(&hub, &repo, "github").await;
+    let tx = reported_transport(&service, &repo, "github").await;
     assert_eq!(tx, Some(Transport::Https),
         "repo status must reflect the switch on the next call");
 }
@@ -219,17 +219,17 @@ async fn test_ts3_switch_ssh_to_https() {
 
 #[tokio::test]
 async fn test_ts4_switch_https_to_ssh() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo = fresh_repo(&tmp, "ts4");
 
-    init_repo(&hub, &repo, "github", "alice", "ts4", Some("https")).await;
+    init_repo(&service, &repo, "github", "alice", "ts4", Some("https")).await;
     assert_eq!(
         remote_url(&repo, "origin").unwrap(),
         "https://github.com/alice/ts4.git",
     );
 
     call(
-        &hub,
+        &service,
         "hyperforge.repo.set_transport",
         serde_json::json!({
             "path": repo.display().to_string(),
@@ -242,7 +242,7 @@ async fn test_ts4_switch_https_to_ssh() {
         remote_url(&repo, "origin").unwrap(),
         "git@github.com:alice/ts4.git",
     );
-    let tx = reported_transport(&hub, &repo, "github").await;
+    let tx = reported_transport(&service, &repo, "github").await;
     assert_eq!(tx, Some(Transport::Ssh));
 }
 
@@ -252,14 +252,14 @@ async fn test_ts4_switch_https_to_ssh() {
 
 #[tokio::test]
 async fn test_ts5_idempotent_noop() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo = fresh_repo(&tmp, "ts5");
 
-    init_repo(&hub, &repo, "github", "alice", "ts5", None).await;
+    init_repo(&service, &repo, "github", "alice", "ts5", None).await;
 
     // First switch changes something (ssh -> https).
     let first = call(
-        &hub,
+        &service,
         "hyperforge.repo.set_transport",
         serde_json::json!({
             "path": repo.display().to_string(),
@@ -277,7 +277,7 @@ async fn test_ts5_idempotent_noop() {
 
     // Second switch to the same target — must be a no-op.
     let second = call(
-        &hub,
+        &service,
         "hyperforge.repo.set_transport",
         serde_json::json!({
             "path": repo.display().to_string(),
@@ -318,7 +318,7 @@ async fn test_ts6_recovery_workflow() {
     //   3. The user needs a hyperforge-native recovery: switch back to
     //      HTTPS without leaving the tool. That's exactly what
     //      `repo set_transport --transport https` does.
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo = fresh_repo(&tmp, "ts6");
 
     // Simulate the pre-existing HTTPS remote.
@@ -332,7 +332,7 @@ async fn test_ts6_recovery_workflow() {
     // Step 2: `repo init` is run on this repo. With today's default
     // (SSH), init rewrites origin to the SSH form — the exact point of
     // failure described in TRANSPORT-1's motivation.
-    init_repo(&hub, &repo, "github", "alice", "ts6", None).await;
+    init_repo(&service, &repo, "github", "alice", "ts6", None).await;
     assert_eq!(
         remote_url(&repo, "origin").unwrap(),
         "git@github.com:alice/ts6.git",
@@ -341,7 +341,7 @@ async fn test_ts6_recovery_workflow() {
 
     // Step 3: recovery — switch back to HTTPS via the epic's new method.
     let events = call(
-        &hub,
+        &service,
         "hyperforge.repo.set_transport",
         serde_json::json!({
             "path": repo.display().to_string(),
@@ -363,7 +363,7 @@ async fn test_ts6_recovery_workflow() {
         remote_url(&repo, "origin").unwrap(),
         "https://github.com/alice/ts6.git",
     );
-    let tx = reported_transport(&hub, &repo, "github").await;
+    let tx = reported_transport(&service, &repo, "github").await;
     assert_eq!(tx, Some(Transport::Https),
         "repo status must be clean after recovery");
 
@@ -391,7 +391,7 @@ async fn test_ts7_pre_existing_repo() {
     // and `git remote -v` reflects whatever the old init wrote. Both
     // `repo status` (read) and `repo set_transport` (write) must just
     // work — no re-init, no migration, no cached-field lookups.
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo = fresh_repo(&tmp, "ts7");
 
     // Hand-craft the legacy .hyperforge/config.toml — exactly what a
@@ -417,13 +417,13 @@ visibility = "public"
 
     // `repo status` reports transport correctly — read live, not from
     // any cached field.
-    let tx = reported_transport(&hub, &repo, "github").await;
+    let tx = reported_transport(&service, &repo, "github").await;
     assert_eq!(tx, Some(Transport::Ssh),
         "pre-TRANSPORT repo must report its transport from live git remote");
 
     // Switching works without re-init.
     let events = call(
-        &hub,
+        &service,
         "hyperforge.repo.set_transport",
         serde_json::json!({
             "path": repo.display().to_string(),
@@ -441,6 +441,6 @@ visibility = "public"
         remote_url(&repo, "origin").unwrap(),
         "https://github.com/alice/ts7.git",
     );
-    let tx2 = reported_transport(&hub, &repo, "github").await;
+    let tx2 = reported_transport(&service, &repo, "github").await;
     assert_eq!(tx2, Some(Transport::Https));
 }

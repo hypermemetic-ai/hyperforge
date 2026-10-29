@@ -128,7 +128,7 @@ hyperforge workspace publish --path . --bump minor --deps
   ├── hyperforge/.hyperforge/
   ├── substrate/.hyperforge/
   ├── synapse/.hyperforge/
-  ├── hub-core/.hyperforge/
+  ├── plexus-core/.hyperforge/
   └── ... etc
 
 # One command to push everything:
@@ -252,9 +252,9 @@ Authentication is handled by a separate auth plugin, not part of hyperforge:
 
 ```
 ┌─────────────┐
-│  auth-hub   │  Runs at startup, loads all available keys
+│  auth-service   │  Runs at startup, loads all available keys
 └──────┬──────┘
-       │ Issues access token to other hubs
+       │ Issues access token to other services
        ↓
 ┌─────────────┐
 │ hyperforge  │  Uses token to request specific keys when needed
@@ -262,14 +262,14 @@ Authentication is handled by a separate auth plugin, not part of hyperforge:
        │ "Need: github-token for user@github.com"
        ↓
 ┌─────────────┐
-│  auth-hub   │  Approval queue (with timeout)
+│  auth-service   │  Approval queue (with timeout)
 └─────────────┘  User approves, denies, or times out
 ```
 
 **Auth flow:**
 1. Hyperforge needs to access GitHub
-2. Requests "github-token" from auth-hub via access token
-3. Auth-hub either:
+2. Requests "github-token" from auth-service via access token
+3. Auth-service either:
    - Auto-approves (if policy allows)
    - Prompts user for approval
    - Times out after N seconds
@@ -512,7 +512,7 @@ This epic is broken into tickets that can be worked on in parallel after foundat
 - `unlocks: []`
 
 **LFORGE2-17: Auth integration**
-- Request forge tokens from auth-hub
+- Request forge tokens from auth-service
 - Handle approval/denial/timeout
 - Retry logic
 - Store token for session (don't re-request every time)

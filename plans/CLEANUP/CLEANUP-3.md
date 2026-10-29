@@ -1,4 +1,4 @@
-# CLEANUP-3: Fix hub-codegen rust_codegen_smoke_test (3 compile errors)
+# CLEANUP-3: Fix service-codegen rust_codegen_smoke_test (3 compile errors)
 
 blocked_by: []
 unlocks: [CLEANUP-8]

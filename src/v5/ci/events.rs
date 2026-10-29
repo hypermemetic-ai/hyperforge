@@ -1,4 +1,4 @@
-//! Wire shapes of the `ci` hub and its pipeline children (HYPERFORGE-22).
+//! Wire shapes of the `ci` service and its pipeline children (HYPERFORGE-22).
 
 use std::collections::BTreeMap;
 

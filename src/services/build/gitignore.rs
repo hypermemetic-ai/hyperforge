@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use crate::build_system::BuildSystemKind;
 use crate::commands::runner::{discover_or_bail, run_batch_blocking};
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::{dry_prefix, RepoFilter};
+use crate::service::HyperforgeEvent;
+use crate::services::utils::{dry_prefix, RepoFilter};
 
 // ---------------------------------------------------------------------------
 // Default pattern groups

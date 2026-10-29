@@ -13,7 +13,7 @@ Today the only way to get a token into v5 is hand-edit `secrets.yaml` or use the
 
 ## Required behavior
 
-**New activation: `SecretsHub`** — static child on `HyperforgeHub`, alongside `orgs/repos/workspaces`.
+**New activation: `SecretsService`** — static child on `HyperforgeService`, alongside `orgs/repos/workspaces`.
 
 | Method | Inputs | Behavior |
 |---|---|---|
@@ -21,7 +21,7 @@ Today the only way to get a token into v5 is hand-edit `secrets.yaml` or use the
 | `secrets.list_refs` | — | streams the `SecretRef` set (keys only — never values) as `secret_ref { key, type_hint }` events |
 | `secrets.delete --key K [--dry_run]` | `SecretRef` | removes the entry from `secrets.yaml` |
 
-**New RPC methods on HyperforgeHub (root):**
+**New RPC methods on HyperforgeService (root):**
 
 | Method | Behavior |
 |---|---|

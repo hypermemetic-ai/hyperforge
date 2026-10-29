@@ -1,4 +1,4 @@
-//! `CiHub` and `PipelineHub` — the wire surface of pipelines (HYPERFORGE-22).
+//! `CiService` and `PipelineService` — the wire surface of pipelines (HYPERFORGE-22).
 //!
 //! `ci` is a child of the v5 root. Each registered pipeline is a dynamic
 //! child of `ci`, routed through the generated `ChildRouter::get_child`:
@@ -49,12 +49,12 @@ fn pipeline_event(d: &Declared) -> CiEvent {
 
 /// The `ci` namespace: registered repos and their pipelines.
 #[derive(Clone)]
-pub struct CiHub {
+pub struct CiService {
     config_dir: PathBuf,
     store: Arc<CiStore>,
 }
 
-impl CiHub {
+impl CiService {
     #[must_use]
     pub const fn new(config_dir: PathBuf, store: Arc<CiStore>) -> Self {
         Self { config_dir, store }
@@ -65,7 +65,7 @@ impl CiHub {
     /// a hash seen twice as a cycle, so each pipeline needs its own.
     fn child_hash(&self, d: &Declared) -> String {
         use std::hash::{Hash, Hasher};
-        let child = PipelineHub {
+        let child = PipelineService {
             name: d.spec.name.clone(),
             config_dir: self.config_dir.clone(),
             store: self.store.clone(),
@@ -84,11 +84,11 @@ impl CiHub {
     description = "Pipelines declared in repos' .hyperforge/pipelines.toml; each pipeline is a child (HYPERFORGE-22)",
     crate_path = "plexus_core"
 )]
-impl CiHub {
+impl CiService {
     /// A registered pipeline, by name.
     #[plexus_macros::child(list = "pipeline_names")]
-    fn pipeline(&self, name: &str) -> Option<PipelineHub> {
-        registry::find(&self.config_dir, name).map(|d| PipelineHub {
+    fn pipeline(&self, name: &str) -> Option<PipelineService> {
+        registry::find(&self.config_dir, name).map(|d| PipelineService {
             name: d.spec.name,
             config_dir: self.config_dir.clone(),
             store: self.store.clone(),
@@ -181,13 +181,13 @@ impl CiHub {
 
 /// One pipeline: its runs, its stages, its triggers.
 #[derive(Clone)]
-pub struct PipelineHub {
+pub struct PipelineService {
     name: String,
     config_dir: PathBuf,
     store: Arc<CiStore>,
 }
 
-impl PipelineHub {
+impl PipelineService {
     fn pipeline_name(&self) -> &str {
         &self.name
     }
@@ -199,7 +199,7 @@ impl PipelineHub {
     description = "A pipeline: start a run, trigger its stages, read its runs and logs",
     crate_path = "plexus_core"
 )]
-impl PipelineHub {
+impl PipelineService {
     /// The pipeline as declared: its stages with their needs, trigger,
     /// outputs and env.
     #[plexus_macros::method]

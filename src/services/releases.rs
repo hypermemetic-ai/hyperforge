@@ -1,6 +1,6 @@
-//! `ReleasesHub` — Release management subactivation
+//! `ReleasesService` — Release management subactivation
 //!
-//! A child plugin under `RepoHub`, accessible as:
+//! A child plugin under `RepoService`, accessible as:
 //!   synapse lforge hyperforge repo releases list --org foo --name bar
 //!   synapse lforge hyperforge repo releases create --org foo --name bar --tag v1.0.0
 //!   synapse lforge hyperforge repo releases upload --org foo --name bar --tag v1.0.0 --file ./dist/app.tar.gz
@@ -14,17 +14,17 @@ use crate::adapters::releases::codeberg::CodebergReleaseAdapter;
 use crate::adapters::releases::github::GitHubReleaseAdapter;
 use crate::adapters::releases::ReleasePort;
 use crate::auth::YamlAuthProvider;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::HyperforgeState;
+use crate::service::HyperforgeEvent;
+use crate::services::HyperforgeState;
 use crate::types::Forge;
 
-/// Sub-hub for release operations
+/// Sub-service for release operations
 #[derive(Clone)]
-pub struct ReleasesHub {
+pub struct ReleasesService {
     state: HyperforgeState,
 }
 
-impl ReleasesHub {
+impl ReleasesService {
     pub const fn new(state: HyperforgeState) -> Self {
         Self { state }
     }
@@ -86,7 +86,7 @@ fn guess_content_type(filename: &str) -> &'static str {
     description = "Release management: list, create, upload, delete, assets",
     crate_path = "plexus_core"
 )]
-impl ReleasesHub {
+impl ReleasesService {
     /// List releases for a repo across configured forges
     #[plexus_macros::method(
         description = "List releases for a repository across its configured forges",
@@ -568,7 +568,7 @@ impl ReleasesHub {
     }
 }
 
-/// Resolve which forges to target, same pattern as `ImagesHub`
+/// Resolve which forges to target, same pattern as `ImagesService`
 async fn resolve_target_forges(
     state: &HyperforgeState,
     org: &str,

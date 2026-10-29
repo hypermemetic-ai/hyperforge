@@ -5,14 +5,13 @@
 
 pub mod adapters;
 pub mod auth;
-pub mod auth_hub;
+pub mod auth_service;
 pub mod build_system;
 pub mod commands;
 pub mod config;
 pub mod docker;
 pub mod git;
-pub mod hub;
-pub mod hubs;
+pub mod service;
 pub mod package;
 pub mod registry;
 pub mod remote;
@@ -25,11 +24,11 @@ pub use plexus_core::serde_helpers;
 
 // Re-exports for convenience
 pub use adapters::{ForgePort, LocalForge};
-pub use auth_hub::{AuthEvent, AuthHub};
+pub use auth_service::{AuthEvent, AuthService};
 pub use config::HyperforgeConfig;
 pub use git::Transport;
-pub use hub::{
-    HyperforgeEvent, HyperforgeHub, OrgAddFailureReason, OrgUpdateFailureReason, OrgUpdateOp,
+pub use service::{
+    HyperforgeEvent, HyperforgeService, OrgAddFailureReason, OrgUpdateFailureReason, OrgUpdateOp,
     TransportChangeFailureReason,
 };
 pub use services::{SymmetricSyncService, SyncDiff, SyncOp};

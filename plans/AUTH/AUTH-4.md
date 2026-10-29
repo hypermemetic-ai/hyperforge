@@ -9,7 +9,7 @@ A command that walks the user through obtaining and configuring the right tokens
 
 ## Method
 
-`auth setup` on the root HyperforgeHub.
+`auth setup` on the root HyperforgeService.
 
 ### Params
 - `org` — organization name (required)
