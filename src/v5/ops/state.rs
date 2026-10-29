@@ -2,11 +2,11 @@
 //!
 //! For now this is a re-export facade over `crate::v5::config`. The
 //! implementations stay in config.rs (which also owns the type
-//! definitions); everything a hub needs to touch state goes through
+//! definitions); everything a service needs to touch state goes through
 //! one of the names here. The V5LIFECYCLE-11 checkpoint's grep
-//! invariant requires that no hub outside `ops/` calls yaml I/O
+//! invariant requires that no service outside `ops/` calls yaml I/O
 //! directly — `config.rs` is exempt because it's the state module's
-//! implementation detail, not a hub.
+//! implementation detail, not a service.
 
 pub use crate::v5::config::{
     load_all, load_global, load_orgs, load_workspaces, save_global, save_org, save_workspace,

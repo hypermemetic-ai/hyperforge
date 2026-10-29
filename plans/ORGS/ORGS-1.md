@@ -9,7 +9,7 @@ unlocks: []
 
 ## Goal
 
-Hyperforge today exposes `orgs_list` and `orgs_delete` on the root hub,
+Hyperforge today exposes `orgs_list` and `orgs_delete` on the root service,
 but has no programmatic way to *create* an org. Onboarding a new org
 (e.g. `juggernautlabs`) requires hand-editing
 `~/.config/hyperforge/orgs/<org>.toml` and calling `reload`. The hand-edit
@@ -27,7 +27,7 @@ When this epic is done:
   ticket that ships the behavior, not a separate doc-sweep ticket.
 - A final ticket (ORGS-4) verifies that the shipped methods *compose*
   into the user stories the epic was motivated by — automated E2E tests
-  that run the real Synapse → Plexus → hub → filesystem round-trip.
+  that run the real Synapse → Plexus → service → filesystem round-trip.
 - Existing behavior (`orgs_list`, `orgs_delete`) is unchanged.
 
 ## Dependency DAG
@@ -73,10 +73,10 @@ verification" section for the pattern.
   HashMap<String, String>`, `workspace_path: Option<String>`.
 - `OrgConfig::save()` (`src/config/org.rs:39-50`) writes the TOML
   idempotently. No new write machinery required.
-- Root hub is at `src/hub.rs`; activation macro at lines 476-481.
+- Root service is at `src/service.rs`; activation macro at lines 476-481.
   Existing org methods: `orgs_list` (905-960), `orgs_delete` (967-1049).
 - Macros use the current `activation` / `method` names (not the
-  deprecated `hub_methods` / `hub_method`).
+  deprecated `activation` / `method`).
 - Integration test pattern lives in `tests/integration_test.rs` —
-  construct `HyperforgeHub`, register in `DynamicHub`, route
+  construct `HyperforgeService`, register in `DynamicService`, route
   `"hyperforge.<method>"`, match on `HyperforgeEvent` variants.

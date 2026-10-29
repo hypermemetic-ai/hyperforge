@@ -30,7 +30,7 @@ WORKSPACE="${HYPERFORGE_WORKSPACE:-$HOME/dev/controlflow/$ORG}"
 HYPERFORGE_SRC="${HYPERFORGE_SRC:-$HOME/dev/controlflow/hypermemetic/hyperforge}"
 HYPERFORGE_BIN="$HYPERFORGE_SRC/target/release/hyperforge"
 TRANSPORT="${HYPERFORGE_TRANSPORT:-https}"
-HUB_PORT=44104
+SERVICE_PORT=44104
 AUTH_PORT=44105
 
 log()  { printf '\033[1;36m[bootstrap]\033[0m %s\n' "$*" >&2; }
@@ -109,7 +109,7 @@ gh auth setup-git
 
 # --- 5. Start hyperforge (if not running) -------------------------------------
 if ! pgrep -f "target/release/hyperforge$" >/dev/null; then
-  log "Starting hyperforge (transport=$TRANSPORT) on port $HUB_PORT"
+  log "Starting hyperforge (transport=$TRANSPORT) on port $SERVICE_PORT"
   HYPERFORGE_TRANSPORT="$TRANSPORT" \
     nohup "$HYPERFORGE_BIN" >"$HOME/.cache/hyperforge.log" 2>&1 &
   disown
@@ -117,10 +117,10 @@ fi
 
 # Wait for the WebSocket port to bind.
 for _ in $(seq 1 30); do
-  if ss -tln 2>/dev/null | grep -q ":${HUB_PORT} "; then break; fi
+  if ss -tln 2>/dev/null | grep -q ":${SERVICE_PORT} "; then break; fi
   sleep 1
 done
-ss -tln 2>/dev/null | grep -q ":${HUB_PORT} " || die "hyperforge did not open port $HUB_PORT"
+ss -tln 2>/dev/null | grep -q ":${SERVICE_PORT} " || die "hyperforge did not open port $SERVICE_PORT"
 
 # --- 6. Stash GitHub token in hyperforge-auth ---------------------------------
 log "Storing GitHub token in hyperforge-auth (secrets.yaml)"
@@ -130,17 +130,17 @@ synapse -P "$AUTH_PORT" secrets auth set_secret \
 
 # --- 7. Import + clone --------------------------------------------------------
 log "Importing org '$ORG' from GitHub into LocalForge"
-synapse -P "$HUB_PORT" lforge hyperforge repo import \
+synapse -P "$SERVICE_PORT" lforge hyperforge repo import \
   --forge github --org "$ORG" >/dev/null
 
 mkdir -p "$WORKSPACE"
 if [[ -n "$REPO" ]]; then
   log "Cloning single repo $ORG/$REPO into $WORKSPACE/$REPO"
-  synapse -P "$HUB_PORT" lforge hyperforge repo clone \
+  synapse -P "$SERVICE_PORT" lforge hyperforge repo clone \
     --org "$ORG" --name "$REPO" --path "$WORKSPACE/$REPO"
 else
   log "Cloning entire org $ORG into $WORKSPACE"
-  synapse -P "$HUB_PORT" lforge hyperforge workspace clone \
+  synapse -P "$SERVICE_PORT" lforge hyperforge workspace clone \
     --org "$ORG" --path "$WORKSPACE"
 fi
 

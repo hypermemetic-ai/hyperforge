@@ -186,18 +186,18 @@ pub struct CreateRepoOptions {
 }
 ```
 
-### Hub Command Updates
+### Service Command Updates
 
-Update `src/hub.rs` to wire up the new flow:
+Update `src/service.rs` to wire up the new flow:
 
 ```rust
-impl HyperforgeHub {
+impl HyperforgeService {
     /// Handle org import command
     pub async fn handle_org_import(
         &self,
         org_name: &str,
         include_private: bool,
-    ) -> Result<SyncReport, HubError> {
+    ) -> Result<SyncReport, ServiceError> {
         // Get remote forge (e.g., GitHub)
         let remote_forge = self.get_forge(Forge::GitHub)?;
 
@@ -216,7 +216,7 @@ impl HyperforgeHub {
             &local_forge,
             org_name,
             options,
-        ).await.map_err(HubError::from)
+        ).await.map_err(ServiceError::from)
     }
 
     /// Handle repos sync command
@@ -225,7 +225,7 @@ impl HyperforgeHub {
         org_name: &str,
         target_forge: Forge,
         dry_run: bool,
-    ) -> Result<SyncReport, HubError> {
+    ) -> Result<SyncReport, ServiceError> {
         // Get local forge
         let local_forge = self.get_or_create_local_forge(org_name)?;
 
@@ -244,13 +244,13 @@ impl HyperforgeHub {
             remote_forge.as_ref(),
             org_name,
             options,
-        ).await.map_err(HubError::from)
+        ).await.map_err(ServiceError::from)
     }
 
-    fn get_or_create_local_forge(&self, org: &str) -> Result<LocalForge, HubError> {
+    fn get_or_create_local_forge(&self, org: &str) -> Result<LocalForge, ServiceError> {
         let path = self.config_dir.join("orgs").join(org).join("repos.yaml");
         LocalForge::with_auto_save(path, org.to_string())
-            .map_err(|e| HubError::ConfigError(e.to_string()))
+            .map_err(|e| ServiceError::ConfigError(e.to_string()))
     }
 }
 ```
@@ -393,5 +393,5 @@ mod integration_tests {
 2. **Direction is explicit**: Import = remote->local, Sync = local->remote
 3. **delete_missing opt-in**: Safe by default, must explicitly enable deletes
 4. **Auto-save integration**: LocalForge persists changes automatically
-5. **Hub orchestrates**: Hub wires up forges and activations
+5. **Service orchestrates**: Service wires up forges and activations
 6. **Diff = dry_run sync**: No separate diff logic, just sync without applying

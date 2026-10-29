@@ -48,17 +48,34 @@ That's the whole flow. See `docs/v5/getting-started.md` for the long version.
 
 ```
 hyperforge (port 44104)
-├─ HyperforgeHub (root)            ← status, begin, auth_*, config_*
-│  ├─ OrgsHub      → orgs.*        ← list, create, bootstrap, set_credential
-│  ├─ ReposHub     → repos.*       ← clone, fetch, pull, status, register, sync, …
-│  ├─ WorkspacesHub → workspaces.* ← from_org, status, checkout, commit, tag, diff
-│  ├─ SecretsHub   → secrets.*     ← set, list_refs, delete
-│  ├─ BuildHub     → build.*       ← unify, release, dist_init, run, exec
-│  └─ CiHub        → ci.*          ← add, remove, pipelines
-│     └─ PipelineHub → ci.<name>.* ← describe, start, trigger, runs, get, watch, log, cancel
+├─ HyperforgeService (root)            ← status, begin, auth_*, config_*
+│  ├─ OrgsService      → orgs.*        ← list, create, bootstrap, set_credential
+│  ├─ ReposService     → repos.*       ← clone, fetch, pull, status, register, sync, …
+│  ├─ WorkspacesService → workspaces.* ← from_org, status, checkout, commit, tag, diff
+│  ├─ SecretsService   → secrets.*     ← set, list_refs, delete
+│  ├─ BuildService     → build.*       ← unify, release, dist_init, run, exec
+│  └─ CiService        → ci.*          ← add, remove, pipelines
+│     └─ PipelineService → ci.<name>.* ← describe, start, trigger, runs, get, watch, log, cancel
 ├─ ops::*                          ← typed wrappers (state, git, external_auth)
 └─ adapters::*                     ← ForgePort: github, codeberg, gitlab
 ```
+
+### Naming: services (2026-10-29)
+
+A Plexus backend is a *service* (owner, 2026-10-29). Every activation type
+was renamed from its old suffix to `Service` — `HyperforgeService`,
+`OrgsService`, `ReposService`, `WorkspacesService`, `SecretsService`,
+`BuildService`, `CiService`, `PipelineService` (v5), `RepoService`,
+`WorkspaceService`, `ImagesService`, `ReleasesService`, `AuthService`
+(legacy). **Call paths are unchanged**: every namespace and method name
+(`hyperforge repos …`, `build …`, `ci …`, `secrets …`) and every event
+field stayed as it was. What a client can see change is the schema's
+`activation` field (the type name: `"HyperforgeService"` where it said the
+old name), so a client generated from the schema names its types anew on
+regeneration. The registry shim asks the registry service's root as
+`registry-service`, falling back to plexus-registry's current default
+until that repository is renamed. `scripts/naming-gate.sh` (run by
+`cargo test --test naming_gate`) fails on any remnant of the old word.
 
 ## CLI invocation
 
@@ -206,7 +223,7 @@ one). The one-repo forms — `bump --org --name`, `publish --org --name
 implements and every caller uses: one bodiless `impl DriverActivation`
 (`describe` · `trigger` · `watch` · `log` · `cancel` · `approve`), from which
 plexus-macros emits `trait Driver` (a built-in driver implements it),
-`DriverActivation<D>` / `Driver::server()` (serves any driver on a hub;
+`DriverActivation<D>` / `Driver::server()` (serves any driver on a service;
 `server` feature) and `DriverClient<T>: Driver` (a plugin over a transport).
 `--no-default-features` is the wasm-safe build. A run ends in DEPLOY-10's
 `Record` unless the system records itself (`Capabilities.records`). It takes
@@ -215,7 +232,7 @@ until plexus-macros 0.6.1 is published.
 
 ```bash
 cargo test -p hyperforge-driver
-cargo run -p hyperforge-driver --example toy_hub -- 44190   # a scripted driver, for synapse -s / synapse-cc
+cargo run -p hyperforge-driver --example toy_service -- 44190   # a scripted driver, for synapse -s / synapse-cc
 synapse -P 44190 -s toy driver
 ```
 

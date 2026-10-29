@@ -9,7 +9,7 @@ unlocks: []
 
 ## Goal
 
-Populate the `WorkspacesHub` stub (registered in V5CORE-8) with the full
+Populate the `WorkspacesService` stub (registered in V5CORE-8) with the full
 workspace lifecycle plus two higher-level operations: `reconcile` (detect
 dir renames and filesystem removals, update workspace yaml accordingly)
 and `sync` (orchestrate `repos.sync` across workspace members).

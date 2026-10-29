@@ -13,22 +13,22 @@
 //! reports, schema shape) rather than on the exact event discriminators
 //! of each intermediate call.
 //!
-//! These tests exercise the shipped Rust hub surface, not the Synapse
+//! These tests exercise the shipped Rust service surface, not the Synapse
 //! CLI — ORGS-4 describes the scenarios in terms of `synapse` commands
 //! but a Rust test cannot practically spawn Synapse processes. Routing
-//! JSON via `DynamicHub::route("hyperforge.<method>", …, None)` hits
+//! JSON via `DynamicService::route("hyperforge.<method>", …, None)` hits
 //! exactly the same code paths a Synapse call would reach, so it is
 //! the correct in-process equivalent. US-6 (`--help` discoverability) is
-//! tested via the JsonSchema the hub exposes: the shape of the schema
+//! tested via the JsonSchema the service exposes: the shape of the schema
 //! is what Synapse consumes to emit per-forge `--ssh.<forge>` flags.
 //!
 //! Each test runs in its own `tempfile::TempDir` config dir via
-//! `HyperforgeHub::new_with_config_dir`, so tests do not contaminate
+//! `HyperforgeService::new_with_config_dir`, so tests do not contaminate
 //! each other or the developer's real `~/.config/hyperforge`.
 
 use futures::StreamExt;
-use hyperforge::{HyperforgeEvent, HyperforgeHub};
-use plexus_core::plexus::{Activation, DynamicHub, PlexusStreamItem};
+use hyperforge::{HyperforgeEvent, HyperforgeService};
+use plexus_core::plexus::{Activation, DynamicHub as DynamicService, PlexusStreamItem};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -36,23 +36,23 @@ use tempfile::TempDir;
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Build a hub rooted at a tempdir config directory. Returns (hub, tempdir).
+/// Build a service rooted at a tempdir config directory. Returns (service, tempdir).
 /// The tempdir must be held by the caller for the duration of the test so
-/// its directory is not deleted before the hub finishes using it.
-fn test_hub() -> (Arc<DynamicHub>, TempDir) {
+/// its directory is not deleted before the service finishes using it.
+fn test_service() -> (Arc<DynamicService>, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let hyperforge = HyperforgeHub::new_with_config_dir(tmp.path().to_path_buf());
-    let hub = Arc::new(DynamicHub::new("testhub").register(hyperforge));
-    (hub, tmp)
+    let hyperforge = HyperforgeService::new_with_config_dir(tmp.path().to_path_buf());
+    let service = Arc::new(DynamicService::new("testservice").register(hyperforge));
+    (service, tmp)
 }
 
 /// Drain a routed stream into a vector of `HyperforgeEvent`s.
 async fn call(
-    hub: &DynamicHub,
+    service: &DynamicService,
     method: &str,
     params: serde_json::Value,
 ) -> Vec<HyperforgeEvent> {
-    let mut stream = hub.route(method, params, None).await.expect("route call");
+    let mut stream = service.route(method, params, None).await.expect("route call");
     let mut events = Vec::new();
     while let Some(item) = stream.next().await {
         if let PlexusStreamItem::Data { content, .. } = item {
@@ -99,8 +99,8 @@ fn org_config_exists(tmp: &TempDir, org: &str) -> bool {
 
 /// Return the `orgs_list` output line for a specific org, if listed. The
 /// line format is "  <org> — workspace: ..., forges: [...]".
-async fn orgs_list_line(hub: &DynamicHub, org: &str) -> Option<String> {
-    let events = call(hub, "hyperforge.orgs_list", serde_json::json!({})).await;
+async fn orgs_list_line(service: &DynamicService, org: &str) -> Option<String> {
+    let events = call(service, "hyperforge.orgs_list", serde_json::json!({})).await;
     events.into_iter().find_map(|e| match e {
         HyperforgeEvent::Info { message }
             if message.trim_start().starts_with(&format!("{} ", org))
@@ -115,8 +115,8 @@ async fn orgs_list_line(hub: &DynamicHub, org: &str) -> Option<String> {
 
 /// Return the set of org names reported by `orgs_list` (excluding the
 /// trailing "N org(s) configured." summary).
-async fn list_org_names(hub: &DynamicHub) -> Vec<String> {
-    let events = call(hub, "hyperforge.orgs_list", serde_json::json!({})).await;
+async fn list_org_names(service: &DynamicService) -> Vec<String> {
+    let events = call(service, "hyperforge.orgs_list", serde_json::json!({})).await;
     let mut out = Vec::new();
     for ev in events {
         if let HyperforgeEvent::Info { message } = ev {
@@ -141,7 +141,7 @@ async fn list_org_names(hub: &DynamicHub) -> Vec<String> {
 
 #[tokio::test]
 async fn test_us1_onboard() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
 
     // Hold keys/workspace paths as tempdir-anchored paths so they look
     // like a real onboarding flow.
@@ -152,7 +152,7 @@ async fn test_us1_onboard() {
 
     // orgs_add with ssh.github + workspace_path.
     let add = call(
-        &hub,
+        &service,
         "hyperforge.orgs_add",
         serde_json::json!({
             "org": "testorg",
@@ -174,7 +174,7 @@ async fn test_us1_onboard() {
     assert_eq!(ws_path_value(&tmp, "testorg").as_deref(), Some(ws_str.as_str()));
 
     // Post-state assertion 2: orgs_list reports testorg with the fields.
-    let line = orgs_list_line(&hub, "testorg")
+    let line = orgs_list_line(&service, "testorg")
         .await
         .expect("orgs_list should include testorg");
     assert!(line.contains(&ws_str), "workspace_path missing from listing: {}", line);
@@ -187,11 +187,11 @@ async fn test_us1_onboard() {
 
 #[tokio::test]
 async fn test_us2_rotate_ssh() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
 
     // Seed with github + codeberg keys.
     call(
-        &hub,
+        &service,
         "hyperforge.orgs_add",
         serde_json::json!({
             "org": "testorg",
@@ -202,7 +202,7 @@ async fn test_us2_rotate_ssh() {
 
     // Rotate the github key via orgs_update — default is per-field merge.
     let upd = call(
-        &hub,
+        &service,
         "hyperforge.orgs_update",
         serde_json::json!({
             "org": "testorg",
@@ -232,11 +232,11 @@ async fn test_us2_rotate_ssh() {
 
 #[tokio::test]
 async fn test_us3_rehome_and_clear_workspace() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
 
     // Seed the org with an initial workspace.
     call(
-        &hub,
+        &service,
         "hyperforge.orgs_add",
         serde_json::json!({
             "org": "testorg",
@@ -249,7 +249,7 @@ async fn test_us3_rehome_and_clear_workspace() {
     // 1. Dry-run: propose re-home to /new/path, but assert no persistence.
     let pre_dry = std::fs::read_to_string(tmp.path().join("orgs").join("testorg.toml")).unwrap();
     let dry = call(
-        &hub,
+        &service,
         "hyperforge.orgs_update",
         serde_json::json!({
             "org": "testorg",
@@ -270,7 +270,7 @@ async fn test_us3_rehome_and_clear_workspace() {
 
     // 2. Commit the re-home.
     call(
-        &hub,
+        &service,
         "hyperforge.orgs_update",
         serde_json::json!({
             "org": "testorg",
@@ -282,7 +282,7 @@ async fn test_us3_rehome_and_clear_workspace() {
 
     // 3. Clear via empty string.
     call(
-        &hub,
+        &service,
         "hyperforge.orgs_update",
         serde_json::json!({
             "org": "testorg",
@@ -310,10 +310,10 @@ async fn test_us3_rehome_and_clear_workspace() {
 
 #[tokio::test]
 async fn test_us4_preview_before_writing() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
 
     let events = call(
-        &hub,
+        &service,
         "hyperforge.orgs_add",
         serde_json::json!({
             "org": "typoed",
@@ -350,7 +350,7 @@ async fn test_us4_preview_before_writing() {
 
 #[tokio::test]
 async fn test_us5_scripted_idempotent_bootstrap() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
 
     // The scripted shell form of this story uses `jq -e` to short-circuit
     // adds for orgs that already exist. In a Rust test we replicate the
@@ -360,13 +360,13 @@ async fn test_us5_scripted_idempotent_bootstrap() {
     // The invariant being tested: looping twice reaches the same end
     // state, with no test assertion failing between the loops.
 
-    async fn ensure_org(hub: &DynamicHub, name: &str, key: &str) {
-        let existing = list_org_names(hub).await;
+    async fn ensure_org(service: &DynamicService, name: &str, key: &str) {
+        let existing = list_org_names(service).await;
         if existing.iter().any(|o| o == name) {
             return;
         }
         call(
-            hub,
+            service,
             "hyperforge.orgs_add",
             serde_json::json!({
                 "org": name,
@@ -377,12 +377,12 @@ async fn test_us5_scripted_idempotent_bootstrap() {
     }
 
     // First loop — both should be added.
-    ensure_org(&hub, "alpha", "/keys/alpha").await;
-    ensure_org(&hub, "beta", "/keys/beta").await;
+    ensure_org(&service, "alpha", "/keys/alpha").await;
+    ensure_org(&service, "beta", "/keys/beta").await;
 
     assert!(org_config_exists(&tmp, "alpha"));
     assert!(org_config_exists(&tmp, "beta"));
-    let after_first = list_org_names(&hub).await;
+    let after_first = list_org_names(&service).await;
     assert!(after_first.contains(&"alpha".to_string()));
     assert!(after_first.contains(&"beta".to_string()));
 
@@ -397,8 +397,8 @@ async fn test_us5_scripted_idempotent_bootstrap() {
     std::thread::sleep(std::time::Duration::from_millis(20));
 
     // Second loop — the guard must short-circuit; no writes happen.
-    ensure_org(&hub, "alpha", "/keys/alpha").await;
-    ensure_org(&hub, "beta", "/keys/beta").await;
+    ensure_org(&service, "alpha", "/keys/alpha").await;
+    ensure_org(&service, "beta", "/keys/beta").await;
 
     assert_eq!(
         std::fs::metadata(&alpha_path).unwrap().modified().unwrap(),
@@ -416,7 +416,7 @@ async fn test_us5_scripted_idempotent_bootstrap() {
     // rather than silently succeeding — so scripts that forget the guard
     // can still tell what happened.
     let retry = call(
-        &hub,
+        &service,
         "hyperforge.orgs_add",
         serde_json::json!({
             "org": "alpha",
@@ -435,7 +435,7 @@ async fn test_us5_scripted_idempotent_bootstrap() {
 }
 
 // ---------------------------------------------------------------------------
-// US-6 — `--help` discoverability (via hub JsonSchema)
+// US-6 — `--help` discoverability (via service JsonSchema)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -443,12 +443,12 @@ async fn test_us6_help_discoverability() {
     // This story says: `synapse ... orgs_add --help` should show per-forge
     // SSH flags (`--ssh.github`, `--ssh.codeberg`, `--ssh.gitlab`) and
     // NOT a single `--ssh` flag that accepts JSON. Synapse derives that
-    // flag layout from the JsonSchema the hub exposes for the method's
+    // flag layout from the JsonSchema the service exposes for the method's
     // params. So the in-process equivalent of the `--help` check is an
     // inspection of the schema's `ssh` property: it must be an object
     // with typed per-forge fields, not an opaque string/blob.
 
-    let hyperforge = HyperforgeHub::new();
+    let hyperforge = HyperforgeService::new();
     let schema = Activation::plugin_schema(&hyperforge);
 
     for method_name in ["orgs_add", "orgs_update"] {
@@ -575,11 +575,11 @@ fn find_properties(
 
 #[tokio::test]
 async fn test_antistory_rename_composes() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
 
     // 1. Create the "old" org with a full shape.
     call(
-        &hub,
+        &service,
         "hyperforge.orgs_add",
         serde_json::json!({
             "org": "oldname",
@@ -610,7 +610,7 @@ async fn test_antistory_rename_composes() {
             serde_json::Value::String(wp.clone()),
         );
     }
-    let add = call(&hub, "hyperforge.orgs_add", serde_json::Value::Object(params)).await;
+    let add = call(&service, "hyperforge.orgs_add", serde_json::Value::Object(params)).await;
     assert!(
         add.iter()
             .any(|e| matches!(e, HyperforgeEvent::OrgAdded { org, dry_run: false } if org == "newname")),
@@ -620,7 +620,7 @@ async fn test_antistory_rename_composes() {
 
     // 4. Delete the old org (confirm: true — orgs_delete dry-runs otherwise).
     call(
-        &hub,
+        &service,
         "hyperforge.orgs_delete",
         serde_json::json!({
             "org": "oldname",

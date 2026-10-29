@@ -54,7 +54,7 @@ workspace/
 
 ### 4. Registry Authentication
 - Each registry has different auth (separate from forge auth)
-- Request credentials from auth-hub
+- Request credentials from auth-service
 - Cache for session
 - Clear errors when missing auth
 
@@ -903,7 +903,7 @@ impl DependencyGraph {
 
 ### PKG-9: Registry Authentication
 
-**Goal**: Request registry credentials from auth-hub
+**Goal**: Request registry credentials from auth-service
 
 **Implementation**:
 ```rust
@@ -914,12 +914,12 @@ pub trait AuthProvider: Send + Sync {
     async fn request(&self, key: &str) -> Result<String>;
 }
 
-pub struct AuthHubClient {
+pub struct AuthServiceClient {
     access_token: String,
     timeout: Duration,
 }
 
-impl AuthHubClient {
+impl AuthServiceClient {
     pub fn new(access_token: String) -> Self {
         Self {
             access_token,
@@ -929,26 +929,26 @@ impl AuthHubClient {
 }
 
 #[async_trait]
-impl AuthProvider for AuthHubClient {
+impl AuthProvider for AuthServiceClient {
     async fn request(&self, key: &str) -> Result<String> {
-        // Request credential from auth-hub
+        // Request credential from auth-service
         // Use access_token to authenticate request
-        // Auth-hub may:
+        // Auth-service may:
         //   - Auto-approve (return immediately)
         //   - Prompt user (wait for approval)
         //   - Timeout (return error)
 
         // For now, stub implementation:
-        // In real version, this would be RPC call to auth-hub
+        // In real version, this would be RPC call to auth-service
 
         match key {
             "cargo-token" => {
                 // Could read from ~/.cargo/credentials
-                todo!("Request from auth-hub")
+                todo!("Request from auth-service")
             }
             "npm-token" => {
                 // Could read from ~/.npmrc
-                todo!("Request from auth-hub")
+                todo!("Request from auth-service")
             }
             _ => Err(anyhow!("Unknown credential: {}", key))
         }
@@ -959,7 +959,7 @@ impl AuthProvider for AuthHubClient {
 **Acceptance**:
 - Interface defined
 - Stub implementation works
-- Integration with real auth-hub (LFORGE2-17) deferred
+- Integration with real auth-service (LFORGE2-17) deferred
 
 **Blocked by**: PKG-1
 **Unlocks**: PKG-2, PKG-3, PKG-4, PKG-5, PKG-6

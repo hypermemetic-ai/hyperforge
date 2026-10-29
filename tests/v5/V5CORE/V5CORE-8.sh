@@ -7,7 +7,7 @@ hf_spawn
 
 schema=$(hf_cmd __schema__ 2>/dev/null || hf_cmd)
 
-echo "$schema" | hf_assert_event '.path == "workspaces" and .activation == "WorkspacesHub"'
+echo "$schema" | hf_assert_event '.path == "workspaces" and .activation == "WorkspacesService"'
 echo "$schema" | hf_assert_event '.path == "workspaces" and (.methods | length == 0)'
 echo "$schema" | hf_assert_event '.path == "workspaces" and (.children | length == 0)'
 

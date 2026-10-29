@@ -9,8 +9,8 @@ Make `--path` optional and add `--workspace` to every workspace/build command. C
 
 ## Affected Methods
 
-### WorkspaceHub: sync, push_all, diff, check, status, pull, verify, verify_sync, clone, move_repos, init_configs, set_default_branch, update_ssh
-### BuildHub: dirty, activity, loc, large_files, analyze, package_diff, run, exec, release, release_all, binstall_init, dist_show, dist_init, brew_formula
+### WorkspaceService: sync, push_all, diff, check, status, pull, verify, verify_sync, clone, move_repos, init_configs, set_default_branch, update_ssh
+### BuildService: dirty, activity, loc, large_files, analyze, package_diff, run, exec, release, release_all, binstall_init, dist_show, dist_init, brew_formula
 
 ## Pattern
 
@@ -76,10 +76,10 @@ Assert output is NOT prefixed (single workspace = no visual noise).
 Register 2 workspaces. Call `build activity` (no args).
 Assert output contains repo activity from both workspaces.
 
-### Hub method registration test
+### Service method registration test
 
-### `test_build_hub_methods_have_workspace_param`
-Fetch the BuildHub schema. For every method that previously took `path`, assert the schema now includes both `path` (optional) and `workspace` (optional) params.
+### `test_build_service_methods_have_workspace_param`
+Fetch the BuildService schema. For every method that previously took `path`, assert the schema now includes both `path` (optional) and `workspace` (optional) params.
 
-### `test_workspace_hub_methods_have_workspace_param`
-Same for WorkspaceHub methods.
+### `test_workspace_service_methods_have_workspace_param`
+Same for WorkspaceService methods.

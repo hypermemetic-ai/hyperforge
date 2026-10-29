@@ -6,7 +6,7 @@
                  wire
                    │
  ┌─────────────────┴─────────────────┐
- │  hubs  — translate events ↔ RPC   │   src/v5/{hub,orgs,repos,workspaces}.rs
+ │  services  — translate events ↔ RPC   │   src/v5/{service,orgs,repos,workspaces}.rs
  └─────────────────┬─────────────────┘
                    │ typed outcomes
  ┌─────────────────┴─────────────────┐
@@ -19,7 +19,7 @@
 ```
 
 The split is enforced by V5LIFECYCLE-11's grep checkpoint and pinned by
-**Decision D13**: hubs may not directly invoke `serde_yaml`,
+**Decision D13**: services may not directly invoke `serde_yaml`,
 `adapter.*`, `for_provider`, or `std::fs::{read,write,create_dir_all}`
 against config paths. Every state read or write goes through `ops::`.
 
@@ -34,11 +34,11 @@ Source: [`src/v5/ops/mod.rs`](../../src/v5/ops/mod.rs).
 | `ops::fs` | `.hyperforge/config.toml` read/write at `<dir>/.hyperforge/config.toml`. The `HyperforgeRepoConfig` struct + `InitError`. |
 | `ops::git` | `clone_repo`, `fetch`, `pull_ff`, `push_refs`, `status`, `is_dirty`, `set_remote_url`. All shell out to the user's `git` CLI so SSH agents / credential helpers / hooks flow through transparently. The only place in `src/v5/` that spawns `git` processes. |
 
-A hub method's job is to validate its inputs, call into `ops::`,
+A service method's job is to validate its inputs, call into `ops::`,
 receive a typed outcome (a `Result<...>` over `ConfigError`,
 `ForgePortError`, `GitError`, etc.), and translate that outcome into
 its own `Event` envelope. No yaml, no adapter handle, no `std::fs`
-inside the hub body for state paths.
+inside the service body for state paths.
 
 This DRY rule is regression-tested by V5LIFECYCLE-11:
 
@@ -142,16 +142,16 @@ hand-edit `secrets.yaml`.
 
 ## How a method is added
 
-The pattern is consistent across the hubs (see `repos.delete` for a
+The pattern is consistent across the services (see `repos.delete` for a
 typical example):
 
-1. **Define the event variant** on the hub's `Event` enum, with
+1. **Define the event variant** on the service's `Event` enum, with
    `#[serde(tag = "type", rename_all = "snake_case")]`. New methods
    that introduce a payload shape should add a distinct variant — a
    different `type` discriminator — rather than overloading an
    existing one. Test scripts assert on `.type == "<category>"`.
 2. **Add the method** under the `#[plexus_macros::activation(...)]`
-   block on the hub. Use `#[plexus_macros::method(params(...))]` to
+   block on the service. Use `#[plexus_macros::method(params(...))]` to
    document each parameter.
 3. **Validate at the entry**. Empty strings, malformed shapes, missing
    required fields — every one of these is a typed `Error` event
@@ -172,6 +172,6 @@ typical example):
 
 The activation tree itself is **static-only** in v1: no
 `#[child(list=...)]`, no dynamic children. A new namespace requires a
-new `Hub` struct and a `#[plexus_macros::child]` accessor on the
+new `Service` struct and a `#[plexus_macros::child]` accessor on the
 parent. The upgrade path to dynamic children (plexus-macros 0.5+) is
 additive and deferrable.

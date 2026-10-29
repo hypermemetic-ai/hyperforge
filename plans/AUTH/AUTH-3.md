@@ -9,7 +9,7 @@ A command that validates all configured tokens — checks they exist, aren't exp
 
 ## Method
 
-`auth check` on the root HyperforgeHub (not a sub-hub).
+`auth check` on the root HyperforgeService (not a sub-service).
 
 ### Params
 - `org` — check credentials for a specific org (optional, checks all if omitted)

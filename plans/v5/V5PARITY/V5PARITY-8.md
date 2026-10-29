@@ -13,7 +13,7 @@ Small-but-missing root-level ergonomics from v4. None on their own is a day's wo
 
 ## Required behavior
 
-Five new methods on `HyperforgeHub` (root):
+Five new methods on `HyperforgeService` (root):
 
 | Method | Behavior |
 |---|---|

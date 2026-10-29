@@ -17,8 +17,8 @@ use crate::commands::runner::discover_or_bail;
 use crate::commands::workspace::{build_publish_dep_graph, DiscoveredRepo};
 use crate::config::HyperforgeConfig;
 use crate::git::Git;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::RepoFilter;
+use crate::service::HyperforgeEvent;
+use crate::services::utils::RepoFilter;
 use crate::types::config::DistChannel;
 use crate::types::Forge;
 

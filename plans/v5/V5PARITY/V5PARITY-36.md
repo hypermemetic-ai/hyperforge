@@ -61,7 +61,7 @@ That shell loop tripped over a clipboard token swap, falsely matching `"does not
 5. `--dry_run true` emits all events with no forge HTTP and no v5 yaml writes.
 6. Source token comes from v5's secret store via the source org's existing credential resolution (V5PARITY-24's resolve chain). No clipboard / no env var dependency.
 7. `repos.migrate --to github/foo` emits `migrate_failed { stage: forge_migrate, message: "github does not support migrate_from" }`.
-8. `workspaces.migrate --name W --filter "axon,hub-*" --to codeberg/hyperslop --retire true` retires every filter-matching member; aggregate `workspace_migrate_summary { ok, errored, skipped }`.
+8. `workspaces.migrate --name W --filter "axon,service-*" --to codeberg/hyperslop --retire true` retires every filter-matching member; aggregate `workspace_migrate_summary { ok, errored, skipped }`.
 
 ## Completion
 

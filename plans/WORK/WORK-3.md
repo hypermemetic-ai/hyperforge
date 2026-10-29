@@ -5,7 +5,7 @@ unlocks: [WORK-7]
 
 ## Scope
 
-CRUD commands for the workspace registry, exposed as hub methods.
+CRUD commands for the workspace registry, exposed as service methods.
 
 ## Methods
 
@@ -20,7 +20,7 @@ No required params.
 
 ## Tests
 
-### Integration tests (against running hub, or via direct method call)
+### Integration tests (against running service, or via direct method call)
 
 ### `test_register_emits_success`
 Call `workspace_register(name="testws", path="/tmp/testws", org="testorg", forges=Some(vec![GitHub]))`.

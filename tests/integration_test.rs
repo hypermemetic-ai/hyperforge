@@ -1,9 +1,9 @@
-//! Integration tests for hyperforge hub
+//! Integration tests for hyperforge service
 
 use futures::StreamExt;
-use plexus_core::plexus::{DynamicHub, PlexusStreamItem};
+use plexus_core::plexus::{DynamicHub as DynamicService, PlexusStreamItem};
 use hyperforge::{
-    HyperforgeEvent, HyperforgeHub, OrgAddFailureReason, OrgUpdateFailureReason, OrgUpdateOp,
+    HyperforgeEvent, HyperforgeService, OrgAddFailureReason, OrgUpdateFailureReason, OrgUpdateOp,
     Transport, TransportChangeFailureReason,
 };
 use std::process::Command;
@@ -12,8 +12,8 @@ use tempfile::TempDir;
 
 /// Drain a routed stream into a vector of `HyperforgeEvent`s, ignoring any
 /// non-`Data` items.
-async fn drain_hyperforge_events(hub: &DynamicHub, method: &str, params: serde_json::Value) -> Vec<HyperforgeEvent> {
-    let mut stream = hub.route(method, params, None).await.expect("route call");
+async fn drain_hyperforge_events(service: &DynamicService, method: &str, params: serde_json::Value) -> Vec<HyperforgeEvent> {
+    let mut stream = service.route(method, params, None).await.expect("route call");
     let mut events = Vec::new();
     while let Some(item) = stream.next().await {
         if let PlexusStreamItem::Data { content, .. } = item {
@@ -25,24 +25,24 @@ async fn drain_hyperforge_events(hub: &DynamicHub, method: &str, params: serde_j
     events
 }
 
-/// Build a hub rooted at a tempdir config directory. Returns (hub, tempdir).
-fn test_hub() -> (Arc<DynamicHub>, TempDir) {
+/// Build a service rooted at a tempdir config directory. Returns (service, tempdir).
+fn test_service() -> (Arc<DynamicService>, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let hyperforge = HyperforgeHub::new_with_config_dir(tmp.path().to_path_buf());
-    let hub = Arc::new(DynamicHub::new("testhub").register(hyperforge));
-    (hub, tmp)
+    let hyperforge = HyperforgeService::new_with_config_dir(tmp.path().to_path_buf());
+    let service = Arc::new(DynamicService::new("testservice").register(hyperforge));
+    (service, tmp)
 }
 
 #[tokio::test]
 async fn test_hyperforge_as_plugin() {
     // Create hyperforge activation
-    let hyperforge = HyperforgeHub::new();
+    let hyperforge = HyperforgeService::new();
 
-    // Register in DynamicHub
-    let hub = Arc::new(DynamicHub::new("testhub").register(hyperforge));
+    // Register in DynamicService
+    let service = Arc::new(DynamicService::new("testservice").register(hyperforge));
 
-    // Call hyperforge.status via DynamicHub routing
-    let mut stream = hub.route("hyperforge.status", serde_json::json!({}), None).await.unwrap();
+    // Call hyperforge.status via DynamicService routing
+    let mut stream = service.route("hyperforge.status", serde_json::json!({}), None).await.unwrap();
 
     let mut found_status = false;
     while let Some(item) = stream.next().await {
@@ -61,15 +61,15 @@ async fn test_hyperforge_as_plugin() {
 }
 
 #[tokio::test]
-async fn test_dynamic_hub_lists_hyperforge() {
+async fn test_dynamic_service_lists_hyperforge() {
     // Create hyperforge activation
-    let hyperforge = HyperforgeHub::new();
+    let hyperforge = HyperforgeService::new();
 
-    // Register in DynamicHub
-    let hub = DynamicHub::new("testhub").register(hyperforge);
+    // Register in DynamicService
+    let service = DynamicService::new("testservice").register(hyperforge);
 
     // Check that hyperforge is listed in activations
-    let activations = hub.list_activations_info();
+    let activations = service.list_activations_info();
     let hyperforge_activation = activations
         .iter()
         .find(|a| a.namespace == "hyperforge")
@@ -89,8 +89,8 @@ async fn test_dynamic_hub_lists_hyperforge() {
 /// Scrape the list of org names reported by `orgs_list`. Returns only the
 /// org names in the order listed (one message line per org, format
 /// "  <org> — workspace: ..., forges: [...]").
-async fn list_orgs(hub: &DynamicHub) -> Vec<String> {
-    let events = drain_hyperforge_events(hub, "hyperforge.orgs_list", serde_json::json!({})).await;
+async fn list_orgs(service: &DynamicService) -> Vec<String> {
+    let events = drain_hyperforge_events(service, "hyperforge.orgs_list", serde_json::json!({})).await;
     let mut out = Vec::new();
     for ev in events {
         if let HyperforgeEvent::Info { message } = ev {
@@ -112,10 +112,10 @@ async fn list_orgs(hub: &DynamicHub) -> Vec<String> {
 
 #[tokio::test]
 async fn test_orgs_add_success_persists_and_shows_in_list() {
-    let (hub, _tmp) = test_hub();
+    let (service, _tmp) = test_service();
 
     // dry-run first — must NOT persist
-    let preview = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    let preview = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "newtest",
         "ssh": { "github": "/tmp/gh_key" },
         "dry_run": true,
@@ -131,11 +131,11 @@ async fn test_orgs_add_success_persists_and_shows_in_list() {
         _ => unreachable!(),
     }
 
-    assert!(!list_orgs(&hub).await.contains(&"newtest".to_string()),
+    assert!(!list_orgs(&service).await.contains(&"newtest".to_string()),
         "dry-run must not persist an org");
 
     // now commit it
-    let committed = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    let committed = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "newtest",
         "ssh": { "github": "/tmp/gh_key" },
         "workspace_path": "/tmp/newtest-ws",
@@ -151,17 +151,17 @@ async fn test_orgs_add_success_persists_and_shows_in_list() {
         _ => unreachable!(),
     }
 
-    let orgs = list_orgs(&hub).await;
+    let orgs = list_orgs(&service).await;
     assert!(orgs.contains(&"newtest".to_string()),
         "orgs_list should include the newly added org, got {:?}", orgs);
 }
 
 #[tokio::test]
 async fn test_orgs_add_already_exists_is_distinguishable_and_file_untouched() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
 
     // Create once
-    drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "dup",
         "ssh": { "github": "/tmp/original" },
     })).await;
@@ -175,7 +175,7 @@ async fn test_orgs_add_already_exists_is_distinguishable_and_file_untouched() {
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     // Attempt again — must fail with AlreadyExists.
-    let retry = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    let retry = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "dup",
         "ssh": { "github": "/tmp/different" },
     })).await;
@@ -198,10 +198,10 @@ async fn test_orgs_add_already_exists_is_distinguishable_and_file_untouched() {
 
 #[tokio::test]
 async fn test_orgs_add_invalid_name_is_distinguishable() {
-    let (hub, _tmp) = test_hub();
+    let (service, _tmp) = test_service();
 
     // Path traversal
-    let traversal = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    let traversal = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "../escape",
         "dry_run": true,
     })).await;
@@ -212,7 +212,7 @@ async fn test_orgs_add_invalid_name_is_distinguishable() {
     assert_eq!(traversal_failure, OrgAddFailureReason::InvalidName);
 
     // Slash
-    let slash = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    let slash = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "foo/bar",
     })).await;
     let slash_failure = slash.iter().find_map(|e| match e {
@@ -222,7 +222,7 @@ async fn test_orgs_add_invalid_name_is_distinguishable() {
     assert_eq!(slash_failure, OrgAddFailureReason::InvalidName);
 
     // Empty
-    let empty = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    let empty = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "",
     })).await;
     let empty_failure = empty.iter().find_map(|e| match e {
@@ -232,7 +232,7 @@ async fn test_orgs_add_invalid_name_is_distinguishable() {
     assert_eq!(empty_failure, OrgAddFailureReason::InvalidName);
 
     // Nothing ever persisted
-    assert!(list_orgs(&hub).await.is_empty(),
+    assert!(list_orgs(&service).await.is_empty(),
         "no org should have been created by any of the invalid attempts");
 }
 
@@ -240,13 +240,13 @@ async fn test_orgs_add_invalid_name_is_distinguishable() {
 async fn test_orgs_add_invalid_name_distinct_from_already_exists() {
     // A single invoker must be able to tell the two failure cases apart by
     // inspecting only the event stream — no source-code diffing.
-    let (hub, _tmp) = test_hub();
+    let (service, _tmp) = test_service();
 
     // Create a valid org first.
-    drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({ "org": "already" })).await;
+    drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({ "org": "already" })).await;
 
-    let already = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({ "org": "already" })).await;
-    let invalid = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({ "org": "../bad" })).await;
+    let already = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({ "org": "already" })).await;
+    let invalid = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({ "org": "../bad" })).await;
 
     let already_reason = already.iter().find_map(|e| match e {
         HyperforgeEvent::OrgAddFailed { reason, .. } => Some(reason.clone()),
@@ -265,10 +265,10 @@ async fn test_orgs_add_invalid_name_distinct_from_already_exists() {
 
 #[tokio::test]
 async fn test_orgs_add_round_trip_preserves_ssh_and_workspace_path() {
-    let (hub, _tmp) = test_hub();
+    let (service, _tmp) = test_service();
 
     // Provide values on all three known forges and a workspace_path.
-    drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "rt",
         "ssh": {
             "github": "/tmp/gh",
@@ -278,7 +278,7 @@ async fn test_orgs_add_round_trip_preserves_ssh_and_workspace_path() {
         "workspace_path": "/tmp/rt-ws",
     })).await;
 
-    let list = drain_hyperforge_events(&hub, "hyperforge.orgs_list", serde_json::json!({})).await;
+    let list = drain_hyperforge_events(&service, "hyperforge.orgs_list", serde_json::json!({})).await;
     let org_line = list.iter().find_map(|e| match e {
         HyperforgeEvent::Info { message } if message.contains("rt ") => Some(message.clone()),
         _ => None,
@@ -294,21 +294,21 @@ async fn test_orgs_add_round_trip_preserves_ssh_and_workspace_path() {
 
 #[tokio::test]
 async fn test_orgs_add_ssh_omitted_creates_empty_ssh_map() {
-    let (hub, _tmp) = test_hub();
+    let (service, _tmp) = test_service();
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "noshh",
     })).await;
     assert!(events.iter().any(|e| matches!(e, HyperforgeEvent::OrgAdded { org, dry_run: false } if org == "noshh")));
 
-    assert!(list_orgs(&hub).await.contains(&"noshh".to_string()));
+    assert!(list_orgs(&service).await.contains(&"noshh".to_string()));
 }
 
 // ---------------------------------------------------------------------------
 // orgs_update (ORGS-3)
 // ---------------------------------------------------------------------------
 
-/// Read the current OrgConfig for `org` from disk, under the hub's config dir.
+/// Read the current OrgConfig for `org` from disk, under the service's config dir.
 fn read_org_toml(tmp: &TempDir, org: &str) -> toml::Value {
     let p = tmp.path().join("orgs").join(format!("{}.toml", org));
     let raw = std::fs::read_to_string(&p).unwrap_or_default();
@@ -333,8 +333,8 @@ fn ws_path_value(tmp: &TempDir, org: &str) -> Option<String> {
 }
 
 /// Seed an org named `upd` with only github ssh (acceptance-criterion #1 setup).
-async fn seed_upd_org(hub: &DynamicHub) {
-    drain_hyperforge_events(hub, "hyperforge.orgs_add", serde_json::json!({
+async fn seed_upd_org(service: &DynamicService) {
+    drain_hyperforge_events(service, "hyperforge.orgs_add", serde_json::json!({
         "org": "upd",
         "ssh": { "github": "/tmp/gh_initial" },
     })).await;
@@ -342,9 +342,9 @@ async fn seed_upd_org(hub: &DynamicHub) {
 
 #[tokio::test]
 async fn test_orgs_update_not_found_is_distinguishable() {
-    let (hub, _tmp) = test_hub();
+    let (service, _tmp) = test_service();
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "ghost",
         "ssh": { "github": "/tmp/gh" },
     })).await;
@@ -360,10 +360,10 @@ async fn test_orgs_update_not_found_is_distinguishable() {
 
 #[tokio::test]
 async fn test_orgs_update_no_fields_is_distinguishable() {
-    let (hub, _tmp) = test_hub();
-    seed_upd_org(&hub).await;
+    let (service, _tmp) = test_service();
+    seed_upd_org(&service).await;
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
     })).await;
 
@@ -377,14 +377,14 @@ async fn test_orgs_update_no_fields_is_distinguishable() {
 
 #[tokio::test]
 async fn test_orgs_update_not_found_distinct_from_no_fields() {
-    let (hub, _tmp) = test_hub();
-    seed_upd_org(&hub).await;
+    let (service, _tmp) = test_service();
+    seed_upd_org(&service).await;
 
-    let not_found = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let not_found = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "ghost",
         "ssh": { "github": "/tmp/gh" },
     })).await;
-    let no_fields = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let no_fields = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
     })).await;
 
@@ -403,12 +403,12 @@ async fn test_orgs_update_not_found_distinct_from_no_fields() {
 
 #[tokio::test]
 async fn test_orgs_update_dry_run_does_not_persist() {
-    let (hub, tmp) = test_hub();
-    seed_upd_org(&hub).await;
+    let (service, tmp) = test_service();
+    seed_upd_org(&service).await;
 
     let before = read_org_toml(&tmp, "upd");
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
         "ssh": { "codeberg": "/tmp/cb_new" },
         "dry_run": true,
@@ -427,15 +427,15 @@ async fn test_orgs_update_dry_run_does_not_persist() {
 
 #[tokio::test]
 async fn test_orgs_update_default_merge_preserves_other_fields() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     // Seed with github and codeberg
-    drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "upd",
         "ssh": { "github": "/tmp/gh_old", "codeberg": "/tmp/cb_old" },
     })).await;
 
     // Update only github
-    let events = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
         "ssh": { "github": "/tmp/gh_NEW" },
     })).await;
@@ -450,15 +450,15 @@ async fn test_orgs_update_default_merge_preserves_other_fields() {
 
 #[tokio::test]
 async fn test_orgs_update_replace_wipes_untouched_fields() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     // Seed with both github and codeberg
-    drain_hyperforge_events(&hub, "hyperforge.orgs_add", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.orgs_add", serde_json::json!({
         "org": "upd",
         "ssh": { "github": "/tmp/gh", "codeberg": "/tmp/cb" },
     })).await;
 
     // Replace with empty ssh record (ssh passed, all fields None)
-    let events = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
         "ssh": {},
         "replace": true,
@@ -477,11 +477,11 @@ async fn test_orgs_update_replace_wipes_untouched_fields() {
 
 #[tokio::test]
 async fn test_orgs_update_workspace_path_three_intents() {
-    let (hub, tmp) = test_hub();
-    seed_upd_org(&hub).await;
+    let (service, tmp) = test_service();
+    seed_upd_org(&service).await;
 
     // Intent: SET
-    let set = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let set = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
         "workspace_path": "/tmp/x",
     })).await;
@@ -493,7 +493,7 @@ async fn test_orgs_update_workspace_path_three_intents() {
     assert_eq!(ws_path_value(&tmp, "upd").as_deref(), Some("/tmp/x"));
 
     // Intent: KEEP — ssh mutation with workspace_path omitted.
-    let keep = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let keep = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
         "ssh": { "github": "/tmp/keep" },
     })).await;
@@ -508,7 +508,7 @@ async fn test_orgs_update_workspace_path_three_intents() {
         "omitted workspace_path must preserve the prior value");
 
     // Intent: CLEAR — empty string.
-    let clear = drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    let clear = drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
         "workspace_path": "",
     })).await;
@@ -523,18 +523,18 @@ async fn test_orgs_update_workspace_path_three_intents() {
 
 #[tokio::test]
 async fn test_orgs_update_round_trip_through_orgs_list() {
-    let (hub, _tmp) = test_hub();
-    seed_upd_org(&hub).await;
+    let (service, _tmp) = test_service();
+    seed_upd_org(&service).await;
 
     // Add codeberg (merge), set a workspace_path, all in one call
-    drain_hyperforge_events(&hub, "hyperforge.orgs_update", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.orgs_update", serde_json::json!({
         "org": "upd",
         "ssh": { "codeberg": "/tmp/cb_rt" },
         "workspace_path": "/tmp/upd_ws",
     })).await;
 
     // orgs_list must surface both forges + the new workspace_path.
-    let list = drain_hyperforge_events(&hub, "hyperforge.orgs_list", serde_json::json!({})).await;
+    let list = drain_hyperforge_events(&service, "hyperforge.orgs_list", serde_json::json!({})).await;
     let line = list.iter().find_map(|e| match e {
         HyperforgeEvent::Info { message } if message.contains("upd ") => Some(message.clone()),
         _ => None,
@@ -588,10 +588,10 @@ fn remote_fetch_url(repo_path: &std::path::Path, name: &str) -> Option<String> {
 
 #[tokio::test]
 async fn test_repo_init_default_transport_is_ssh() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "default-ssh");
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -612,10 +612,10 @@ async fn test_repo_init_default_transport_is_ssh() {
 
 #[tokio::test]
 async fn test_repo_init_transport_ssh_produces_ssh_url() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "explicit-ssh");
 
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -631,10 +631,10 @@ async fn test_repo_init_transport_ssh_produces_ssh_url() {
 
 #[tokio::test]
 async fn test_repo_init_transport_https_produces_https_url() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "explicit-https");
 
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -653,11 +653,11 @@ async fn test_repo_init_transport_https_produces_https_url() {
 
 #[tokio::test]
 async fn test_repo_set_transport_ssh_to_https() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "switch");
 
     // Initialize as SSH (today's default).
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -671,7 +671,7 @@ async fn test_repo_set_transport_ssh_to_https() {
     );
 
     // Switch to HTTPS.
-    let events = drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "https",
     })).await;
@@ -693,10 +693,10 @@ async fn test_repo_set_transport_ssh_to_https() {
 
 #[tokio::test]
 async fn test_repo_set_transport_idempotent_second_call_is_noop() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "idem");
 
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -706,7 +706,7 @@ async fn test_repo_set_transport_idempotent_second_call_is_noop() {
     })).await;
 
     // First switch to https — actually changes something.
-    let first = drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    let first = drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "https",
     })).await;
@@ -722,7 +722,7 @@ async fn test_repo_set_transport_idempotent_second_call_is_noop() {
     std::thread::sleep(std::time::Duration::from_millis(20));
 
     // Second switch with the same target — must be idempotent.
-    let second = drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    let second = drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "https",
     })).await;
@@ -752,11 +752,11 @@ async fn test_repo_set_transport_idempotent_second_call_is_noop() {
 
 #[tokio::test]
 async fn test_repo_set_transport_https_to_ssh() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "back-to-ssh");
 
     // Initialize as HTTPS.
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -771,7 +771,7 @@ async fn test_repo_set_transport_https_to_ssh() {
     );
 
     // Switch to SSH.
-    drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "ssh",
     })).await;
@@ -784,11 +784,11 @@ async fn test_repo_set_transport_https_to_ssh() {
 
 #[tokio::test]
 async fn test_repo_set_transport_on_not_initialized_fails_distinguishably() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     // A bare git repo with no .hyperforge/config.toml.
     let repo_path = fresh_repo_dir(&tmp, "bare");
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "https",
     })).await;
@@ -805,10 +805,10 @@ async fn test_repo_set_transport_on_not_initialized_fails_distinguishably() {
 
 #[tokio::test]
 async fn test_repo_set_transport_on_missing_path_fails_distinguishably() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let missing = tmp.path().join("does-not-exist");
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": missing.display().to_string(),
         "transport": "https",
     })).await;
@@ -823,13 +823,13 @@ async fn test_repo_set_transport_on_missing_path_fails_distinguishably() {
 #[tokio::test]
 async fn test_repo_set_transport_unsupported_value_rejected_at_parse() {
     // Synapse's CLI parser would refuse unknown transports before they
-    // reach the hub, because Transport is a closed-set enum (serde
+    // reach the service, because Transport is a closed-set enum (serde
     // rename_all = "lowercase"). From Rust we exercise that by feeding
-    // an unknown value through DynamicHub::route — the router should
+    // an unknown value through DynamicService::route — the router should
     // refuse to deserialize it into the typed parameter.
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "parse-reject");
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -841,7 +841,7 @@ async fn test_repo_set_transport_unsupported_value_rejected_at_parse() {
     // Baseline: origin is the standard SSH URL.
     let pre = remote_fetch_url(&repo_path, "origin").unwrap();
 
-    let result = hub
+    let result = service
         .route(
             "hyperforge.repo.set_transport",
             serde_json::json!({
@@ -884,11 +884,11 @@ async fn test_repo_set_transport_unsupported_value_rejected_at_parse() {
 
 #[tokio::test]
 async fn test_repo_status_reports_transport_via_event_stream() {
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "status-tx");
 
     // Initialise as HTTPS so the assertion below is specific.
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github",
         "org": "alice",
@@ -898,7 +898,7 @@ async fn test_repo_status_reports_transport_via_event_stream() {
         "no_ssh_wrapper": true,
     })).await;
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.repo.status", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.repo.status", serde_json::json!({
         "path": repo_path.display().to_string(),
     })).await;
 
@@ -911,12 +911,12 @@ async fn test_repo_status_reports_transport_via_event_stream() {
     assert_eq!(reported, Some(Transport::Https));
 
     // Flip transport via the new method and re-read status.
-    drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "ssh",
     })).await;
 
-    let events2 = drain_hyperforge_events(&hub, "hyperforge.repo.status", serde_json::json!({
+    let events2 = drain_hyperforge_events(&service, "hyperforge.repo.status", serde_json::json!({
         "path": repo_path.display().to_string(),
     })).await;
     let reported2 = events2.iter().find_map(|e| match e {
@@ -936,7 +936,7 @@ async fn test_repo_status_transport_on_pre_existing_repo() {
     // awareness of transport, and `git remote -v` was set up in a
     // previous era. `repo status` must still report the transport
     // correctly — read from live `git remote` state, not a cached field.
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "legacy");
 
     // Hand-craft the .hyperforge/config.toml just like an older init
@@ -959,7 +959,7 @@ visibility = "public"
         .output()
         .expect("git remote add");
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.repo.status", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.repo.status", serde_json::json!({
         "path": repo_path.display().to_string(),
     })).await;
 
@@ -972,7 +972,7 @@ visibility = "public"
     assert_eq!(reported, Some(Transport::Ssh));
 
     // And switching works without requiring re-init.
-    drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "https",
     })).await;
@@ -987,10 +987,10 @@ async fn test_repo_set_transport_multi_forge_updates_every_remote() {
     // An init with multiple forges creates `origin` for the first and a
     // named remote per additional forge. A single set_transport call
     // must bring *every* managed remote to the requested transport.
-    let (hub, tmp) = test_hub();
+    let (service, tmp) = test_service();
     let repo_path = fresh_repo_dir(&tmp, "multi");
 
-    drain_hyperforge_events(&hub, "hyperforge.repo.init", serde_json::json!({
+    drain_hyperforge_events(&service, "hyperforge.repo.init", serde_json::json!({
         "path": repo_path.display().to_string(),
         "forges": "github,codeberg",
         "org": "alice",
@@ -1002,7 +1002,7 @@ async fn test_repo_set_transport_multi_forge_updates_every_remote() {
     assert!(remote_fetch_url(&repo_path, "origin").unwrap().starts_with("git@"));
     assert!(remote_fetch_url(&repo_path, "codeberg").unwrap().starts_with("git@"));
 
-    let events = drain_hyperforge_events(&hub, "hyperforge.repo.set_transport", serde_json::json!({
+    let events = drain_hyperforge_events(&service, "hyperforge.repo.set_transport", serde_json::json!({
         "path": repo_path.display().to_string(),
         "transport": "https",
     })).await;

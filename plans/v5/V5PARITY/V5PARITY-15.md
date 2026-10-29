@@ -27,7 +27,7 @@ Workspace iterations make this visible: `workspaces.status` over 50 members spaw
 | `show` (rev:path) | git2 | local object read |
 | `set_remote_url`, `set_ssh_command`, `clear_ssh_command`, `get_ssh_command` | git2 | local config edits |
 
-**Public API contract (unchanged):** every existing `ops::git::*` function keeps its signature, errors via the same `GitError` variants. Callers (hubs, build cluster) require no change.
+**Public API contract (unchanged):** every existing `ops::git::*` function keeps its signature, errors via the same `GitError` variants. Callers (services, build cluster) require no change.
 
 **`Backend` enum or trait, implementer's choice:** how the backend selection is structured (compile-time feature, runtime dispatch, two private modules behind one façade) is up to the implementer. The contract is: callers cannot tell which backend ran.
 

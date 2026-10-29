@@ -1,6 +1,6 @@
-//! `HyperforgeHub` - Root activation for hyperforge
+//! `HyperforgeService` - Root activation for hyperforge
 //!
-//! This is a hub plugin that routes to child sub-hubs:
+//! This is a service plugin that routes to child sub-services:
 //! - repo: Single-repo operations and registry CRUD
 //! - workspace: Multi-repo workspace orchestration
 
@@ -19,12 +19,12 @@ use crate::auth::credentials::{
 };
 use crate::auth::AuthProvider;
 use crate::auth::YamlAuthProvider;
-use crate::auth_hub::storage::YamlStorage;
-use crate::auth_hub::types::SecretPath;
+use crate::auth_service::storage::YamlStorage;
+use crate::auth_service::types::SecretPath;
 use crate::commands::runner::discover_or_bail;
 use crate::config::{HyperforgeConfig, OrgConfig};
-use crate::hubs::utils::{make_adapter, RepoFilter};
-use crate::hubs::{BuildHub, HyperforgeState, RepoHub, WorkspaceHub};
+use crate::services::utils::{make_adapter, RepoFilter};
+use crate::services::{BuildService, HyperforgeState, RepoService, WorkspaceService};
 use crate::types::config::DistChannel;
 use crate::types::repo::RepoRecord;
 use crate::types::Forge;
@@ -576,21 +576,21 @@ async fn validate_credential(spec: &CredentialSpec, token: &str) -> (String, Opt
     }
 }
 
-/// Root hub for hyperforge operations
+/// Root service for hyperforge operations
 #[derive(Clone)]
-pub struct HyperforgeHub {
+pub struct HyperforgeService {
     pub(crate) state: HyperforgeState,
 }
 
-impl HyperforgeHub {
-    /// Create a new `HyperforgeHub` instance
+impl HyperforgeService {
+    /// Create a new `HyperforgeService` instance
     pub fn new() -> Self {
         Self {
             state: HyperforgeState::new(),
         }
     }
 
-    /// Create a HyperforgeHub rooted at an arbitrary config directory.
+    /// Create a HyperforgeService rooted at an arbitrary config directory.
     ///
     /// Tests use this to isolate disk I/O under a tempdir.
     pub fn new_with_config_dir(config_dir: std::path::PathBuf) -> Self {
@@ -600,7 +600,7 @@ impl HyperforgeHub {
     }
 }
 
-impl Default for HyperforgeHub {
+impl Default for HyperforgeService {
     fn default() -> Self {
         Self::new()
     }
@@ -611,28 +611,28 @@ impl Default for HyperforgeHub {
     description = "Multi-forge repository management",
     crate_path = "plexus_core"
 )]
-impl HyperforgeHub {
+impl HyperforgeService {
     /// Single-repo operations and registry CRUD.
     #[plexus_macros::child]
-    fn repo(&self) -> RepoHub {
-        RepoHub::new(self.state.clone())
+    fn repo(&self) -> RepoService {
+        RepoService::new(self.state.clone())
     }
 
     /// Multi-repo workspace orchestration.
     #[plexus_macros::child]
-    fn workspace(&self) -> WorkspaceHub {
-        WorkspaceHub::new(self.state.clone())
+    fn workspace(&self) -> WorkspaceService {
+        WorkspaceService::new(self.state.clone())
     }
 
     /// Build system orchestration (cargo, cabal, node, packaging).
     ///
     /// `&self` is required by `#[plexus_macros::child]` (the macro
-    /// generates a `ChildRouter` accessor that takes `&Self`). `BuildHub`
+    /// generates a `ChildRouter` accessor that takes `&Self`). `BuildService`
     /// carries no state of its own, so the receiver is unused here.
     #[plexus_macros::child]
     #[allow(clippy::unused_self)]
-    const fn build(&self) -> BuildHub {
-        BuildHub::new()
+    const fn build(&self) -> BuildService {
+        BuildService::new()
     }
 
     /// Show hyperforge status

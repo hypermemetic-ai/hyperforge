@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes how to run Claude Code in a Docker container for the hyperforge-lforge2 project, including its dependencies (hub-core, hub-macro, hub-transport).
+This document describes how to run Claude Code in a Docker container for the hyperforge-lforge2 project, including its dependencies (plexus-core, plexus-macros, plexus-transport).
 
 ## Problem: Git Worktrees Don't Clone
 
@@ -25,12 +25,12 @@ projects:
     path: ../hyperforge       # Parent repo, not the worktree
     branch: feat/lforge2-redesign  # Branch to checkout
     main: true                # Start Claude in this directory
-  hub-core:
-    path: ../hub-core
-  hub-macro:
-    path: ../hub-macro
-  hub-transport:
-    path: ../hub-transport
+  plexus-core:
+    path: ../plexus-core
+  plexus-macros:
+    path: ../plexus-macros
+  plexus-transport:
+    path: ../plexus-transport
 ```
 
 Key fields:
@@ -72,9 +72,9 @@ This script:
 ├── .main-project          # Contains "hyperforge"
 ├── .claude-projects.yml   # Config copied from host
 ├── hyperforge/            # Main project (on feat/lforge2-redesign branch)
-├── hub-core/              # Dependency
-├── hub-macro/             # Dependency
-└── hub-transport/         # Dependency
+├── plexus-core/              # Dependency
+├── plexus-macros/             # Dependency
+└── plexus-transport/         # Dependency
 ```
 
 Claude starts in `/workspace/hyperforge` because of `main: true`.

@@ -9,7 +9,7 @@ Given a workspace with dist configs (DIST-10), enumerate every credential that w
 
 ## Method
 
-`auth requirements` on the root HyperforgeHub.
+`auth requirements` on the root HyperforgeService.
 
 ### Params
 - `path` — workspace path (required)

@@ -1,10 +1,10 @@
 //! `ops` — the v5 library layer (V5LIFECYCLE).
 //!
 //! All yaml I/O, `ForgePort` adapter calls, and `.hyperforge/config.toml`
-//! filesystem interactions go through this module. Hubs (`ReposHub`,
-//! `WorkspacesHub`, `OrgsHub`, …) are translation layers: they call
+//! filesystem interactions go through this module. Services (`ReposService`,
+//! `WorkspacesService`, `OrgsService`, …) are translation layers: they call
 //! `ops::*`, receive typed outcomes, and emit RPC event envelopes.
-//! No hub directly uses `serde_yaml`, `adapter.*`, `for_provider`, or
+//! No service directly uses `serde_yaml`, `adapter.*`, `for_provider`, or
 //! `std::fs` against config paths. D13 — enforced by V5LIFECYCLE-11's
 //! grep-based checkpoint.
 

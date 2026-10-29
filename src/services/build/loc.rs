@@ -7,8 +7,8 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 use crate::commands::runner::discover_or_bail;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::RepoFilter;
+use crate::service::HyperforgeEvent;
+use crate::services::utils::RepoFilter;
 
 /// Count lines of code for a single repo, broken down by file extension.
 fn measure_loc(repo_path: &std::path::Path) -> Result<(usize, usize, HashMap<String, usize>), String> {

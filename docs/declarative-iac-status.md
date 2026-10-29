@@ -6,7 +6,7 @@ This document captures the current state of implementing declarative infrastruct
 
 ## Architecture Summary
 
-The system uses a hub-based architecture where:
+The system uses a service-based architecture where:
 1. **Local `repos.yaml`** = desired state (what repos should exist)
 2. **`_synced` field** = last applied state (what Pulumi created)
 3. **`repos.diff`** = compares desired vs synced
@@ -45,8 +45,8 @@ repos:
 
 ## What's Working
 
-### 1. Hub Infrastructure
-- All HUB tickets (HUB-14 through HUB-22) implemented
+### 1. Service Infrastructure
+- All SERVICE tickets (SERVICE-14 through SERVICE-22) implemented
 - Dynamic org routing: `synapse plexus hyperforge org <org_name> repos <method>`
 - Org children exposed in schema via `plugin_children()` loading from config
 
@@ -167,7 +167,7 @@ data.get("github").and_then(|v| v.as_str()) // direct string values
 
 ## Code Locations
 
-### Hub Implementation
+### Service Implementation
 - `hyperforge/src/activations/org/activation.rs` - OrgActivation with import(), list(), show()
 - `hyperforge/src/activations/org/child_router.rs` - OrgChildRouter for org-specific routes
 - `hyperforge/src/activations/repos/activation.rs` - ReposActivation with sync(), diff(), create(), etc.
@@ -211,7 +211,7 @@ rm ~/.config/hyperforge/orgs/hypermemetic/staged-repos.yaml
 
 1. ~~**Verify output capture fix**~~ - ✅ DONE (2026-01-08)
 2. **Test converge workflow** - `repos.converge --yes true` should run full cycle
-3. **Add HUB-13** - Migration from old hyperforge CLI (not yet started)
+3. **Add SERVICE-13** - Migration from old hyperforge CLI (not yet started)
 4. **Clean up test repos** - Delete test-local-source, test-cycle-2, test-output-capture from forges
 5. **Delete workflow** - Test marking repos with `_delete: true` and syncing
 

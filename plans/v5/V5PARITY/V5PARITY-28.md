@@ -20,7 +20,7 @@ v4 had `repos.assets` (list release artifacts) and `repos.upload` (push artifact
 
 **`ReleaseAsset`** is the closed type pinned in CONTRACTS §types: `{ name: String, size: u64, download_url: String, content_type: String }`. v1 implements GitHub; codeberg/gitlab return `Unimplemented` until adapters land.
 
-**RPC methods on `ReposHub`:**
+**RPC methods on `ReposService`:**
 
 | Method | Behavior |
 |---|---|
@@ -32,7 +32,7 @@ v4 had `repos.assets` (list release artifacts) and `repos.upload` (push artifact
 
 ## What must NOT change
 
-- D13 — adapter calls go through `ops::repo::*` wrappers; `ReposHub` doesn't talk to adapters directly.
+- D13 — adapter calls go through `ops::repo::*` wrappers; `ReposService` doesn't talk to adapters directly.
 - D9 secret redaction — asset content is binary; `bytes` never appears in event payloads.
 - Existing `build.release` semantics (tag + push + forge release creation) stay byte-identical when `--assets` is absent.
 

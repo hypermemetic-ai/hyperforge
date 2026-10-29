@@ -1,4 +1,4 @@
-//! `BuildHub` — V5PARITY-9/10/11. Wire surface for manifest inspection,
+//! `BuildService` — V5PARITY-9/10/11. Wire surface for manifest inspection,
 //! release flow, distribution scaffolding, and per-repo command exec.
 
 use std::path::PathBuf;
@@ -196,12 +196,12 @@ pub enum BuildEvent {
 }
 
 #[derive(Clone)]
-pub struct BuildHub {
+pub struct BuildService {
     config_dir: PathBuf,
     state_dir: PathBuf,
 }
 
-impl BuildHub {
+impl BuildService {
     /// Logs of `publish` go under `<config_dir>/state/publish`.
     #[must_use]
     pub fn new(config_dir: PathBuf) -> Self {
@@ -325,7 +325,7 @@ fn resolve_single_repo_dir(
     description = "v5 build/release/dist wire surface (V5PARITY-9/10/11)",
     crate_path = "plexus_core"
 )]
-impl BuildHub {
+impl BuildService {
     // ==================================================================
     // V5PARITY-9: manifest.
     // ==================================================================

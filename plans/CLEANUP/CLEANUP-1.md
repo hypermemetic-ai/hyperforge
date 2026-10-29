@@ -7,7 +7,7 @@
 ```
 CLEANUP-2 (plexus-macros)  ──┐
                               ├──> CLEANUP-8 (final verification)
-CLEANUP-3 (hub-codegen)   ──┤
+CLEANUP-3 (service-codegen)   ──┤
                               │
 CLEANUP-4 (plexus-transport) ─┤
                               │
@@ -25,7 +25,7 @@ All tickets are independent (no inter-dependencies). Can be done fully in parall
 | Root failure | Cascades to |
 |---|---|
 | plexus-macros | synapse, plexus-deployments |
-| hub-codegen | plexus-sandbox-ts, synapse-cc |
+| service-codegen | plexus-sandbox-ts, synapse-cc |
 
 Fixing 6 root causes fixes all 9 failures.
 
@@ -34,7 +34,7 @@ Fixing 6 root causes fixes all 9 failures.
 | Ticket | Repo | Difficulty | Est. Lines Changed |
 |---|---|---|---|
 | CLEANUP-2 | plexus-macros | Trivial | 3 |
-| CLEANUP-3 | hub-codegen | Moderate | 10-15 |
+| CLEANUP-3 | service-codegen | Moderate | 10-15 |
 | CLEANUP-4 | plexus-transport | Trivial | 2 (delete) |
 | CLEANUP-5 | plexus-registry | Trivial | 5 |
 | CLEANUP-6 | plexus-substrate | Trivial | 1 |

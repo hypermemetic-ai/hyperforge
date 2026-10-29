@@ -1,11 +1,11 @@
 //! `ops::repo` — repo-level operations, single source of truth for
-//! every hub that touches a repo (V5LIFECYCLE-3, -4, -5).
+//! every service that touches a repo (V5LIFECYCLE-3, -4, -5).
 //!
 //! - `derive_provider`, `compute_drift` — relocated from `repos.rs`
-//! - `sync_one` — pure sync inner loop; both `ReposHub::sync` and
-//!   `WorkspacesHub::sync` iterate its output.
+//! - `sync_one` — pure sync inner loop; both `ReposService::sync` and
+//!   `WorkspacesService::sync` iterate its output.
 //! - `exists_on_forge`, `create_on_forge`, `delete_on_forge`,
-//!   `privatize_on_forge` — the forge-call wrappers. Hubs never call
+//!   `privatize_on_forge` — the forge-call wrappers. Services never call
 //!   adapter lifecycle methods directly after this module.
 //! - `dismiss`, `purge` — pure state mutations (V5LIFECYCLE-5).
 
@@ -23,7 +23,7 @@ use crate::v5::secrets::SecretResolver;
 
 // ---------------------------------------------------------------------
 // Provider derivation (relocated from repos.rs; still pub(crate)-ish —
-// we expose it as `pub` so the hubs can call it through the ops
+// we expose it as `pub` so the services can call it through the ops
 // namespace and no caller re-introduces a duplicate).
 // ---------------------------------------------------------------------
 
@@ -333,7 +333,7 @@ pub async fn privatize_on_forge(
 }
 
 // ---------------------------------------------------------------------
-// Sync — single source of truth, called by both hubs (V5LIFECYCLE-3).
+// Sync — single source of truth, called by both services (V5LIFECYCLE-3).
 // ---------------------------------------------------------------------
 
 /// One per-remote sync outcome.
@@ -494,6 +494,6 @@ pub enum PurgeError {
     NotDismissed,
 }
 
-// Suppress unused imports we expose for hub consumers.
+// Suppress unused imports we expose for service consumers.
 #[allow(unused_imports)]
 use adapters as _adapters_anchor;

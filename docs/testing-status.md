@@ -1,8 +1,8 @@
-# Hyperforge Hub Testing Status
+# Hyperforge Service Testing Status
 
 **Last Updated:** 2026-01-08
 
-This document tracks what has been tested and verified in the hyperforge hub implementation.
+This document tracks what has been tested and verified in the hyperforge service implementation.
 
 ## SSH URL Pattern
 

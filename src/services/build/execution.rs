@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use crate::commands::runner::discover_or_bail;
 use crate::commands::workspace::build_dep_graph;
 use crate::git::Git;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::{dry_prefix, RepoFilter};
+use crate::service::HyperforgeEvent;
+use crate::services::utils::{dry_prefix, RepoFilter};
 
 pub fn exec(
     path: String,

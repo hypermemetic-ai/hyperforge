@@ -7,7 +7,7 @@ pub mod crates_io;
 pub mod hackage;
 
 use crate::build_system::BuildSystemKind;
-use crate::hub::PackageRegistry;
+use crate::service::PackageRegistry;
 use async_trait::async_trait;
 use std::path::Path;
 

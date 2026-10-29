@@ -1,7 +1,7 @@
 //! `ops::analytics` — read-only filesystem analytics over a checkout
 //! directory (V5PARITY-4). Pure `std::fs` walks; no subprocess, no git.
 //!
-//! Dirty-check lives in `ops::git` (shared with V5PARITY-3); the hub
+//! Dirty-check lives in `ops::git` (shared with V5PARITY-3); the service
 //! routes `repos.dirty` through that single implementation. D13.
 
 use std::collections::BTreeMap;

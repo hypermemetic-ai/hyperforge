@@ -1,4 +1,4 @@
-//! `WorkspacesHub` — v5 workspaces namespace.
+//! `WorkspacesService` — v5 workspaces namespace.
 //!
 //! V5CORE-8 shipped the empty static child. V5WS-2 attaches the first
 //! real method (`list`); subsequent V5WS tickets layer in the rest of
@@ -20,18 +20,18 @@ use crate::v5::config::{load_workspaces, WorkspaceRepo};
 /// Workspaces namespace. Each method reads/writes `workspaces/*.yaml`
 /// under the daemon's config directory.
 #[derive(Clone)]
-pub struct WorkspacesHub {
+pub struct WorkspacesService {
     config_dir: PathBuf,
 }
 
-impl WorkspacesHub {
+impl WorkspacesService {
     #[must_use]
     pub const fn new(config_dir: PathBuf) -> Self {
         Self { config_dir }
     }
 }
 
-/// Events emitted by `WorkspacesHub` methods.
+/// Events emitted by `WorkspacesService` methods.
 ///
 /// Serialized with `#[serde(tag = "type")]` per D9; every variant maps
 /// to a `type` discriminator in `snake_case`.
@@ -381,7 +381,7 @@ fn parse_repos_arg(raw: &Option<String>) -> Result<Vec<WorkspaceRepo>, String> {
     description = "Workspaces CRUD",
     crate_path = "plexus_core"
 )]
-impl WorkspacesHub {
+impl WorkspacesService {
     /// List every workspace declared under `$HF_CONFIG/workspaces/`.
     ///
     /// Emits one `workspace_summary` event per parsed yaml file in
@@ -2594,7 +2594,7 @@ fn workspace_member_ref(entry: &crate::v5::config::WorkspaceRepo) -> (String, St
 // ---------------------------------------------------------------------
 // V5PARITY-14: typed helpers shared by the workspace git verbs.
 // Each verb method has its own loop; these helpers carry the shared
-// pieces (load + decode) without becoming a string-dispatch hub.
+// pieces (load + decode) without becoming a string-dispatch service.
 // ---------------------------------------------------------------------
 
 /// Per-member iteration context. `repo` is `None` when the member's

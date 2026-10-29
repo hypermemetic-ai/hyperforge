@@ -1,4 +1,4 @@
-//! `BuildHub` — Development tools: manifest generation, publishing, cross-repo execution.
+//! `BuildService` — Development tools: manifest generation, publishing, cross-repo execution.
 //!
 //! These methods never write `LocalForge` or call forge APIs. They operate purely
 //! on the filesystem via workspace discovery.
@@ -19,21 +19,21 @@ pub mod repo_size;
 
 use futures::Stream;
 
-use crate::hub::HyperforgeEvent;
+use crate::service::HyperforgeEvent;
 use crate::types::config::DistChannel;
 use crate::types::Forge;
 
-/// Sub-hub for development tools: manifest generation, publishing, cross-repo execution.
+/// Sub-service for development tools: manifest generation, publishing, cross-repo execution.
 #[derive(Clone)]
-pub struct BuildHub;
+pub struct BuildService;
 
-impl BuildHub {
+impl BuildService {
     pub const fn new() -> Self {
         Self
     }
 }
 
-impl Default for BuildHub {
+impl Default for BuildService {
     fn default() -> Self {
         Self::new()
     }
@@ -44,7 +44,7 @@ impl Default for BuildHub {
     description = "Development tools: manifest generation, publishing, cross-repo execution",
     crate_path = "plexus_core"
 )]
-impl BuildHub {
+impl BuildService {
     /// Generate/update native workspace manifests (Cargo.toml, cabal.project)
     #[plexus_macros::method(
         description = "Generate workspace config files (.cargo/config.toml with [patch.crates-io], cabal.project) from detected build systems. Each repo stays independent while sibling crates resolve locally.",

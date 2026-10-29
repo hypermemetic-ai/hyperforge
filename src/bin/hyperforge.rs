@@ -2,8 +2,8 @@
 //!
 //! Listens on `--port` (default 44104, pinned in CONTRACTS D1 since
 //! v5 became the canonical hyperforge in 5.0.0), registers a Plexus
-//! `DynamicHub` namespaced as `lforge-v5` (D1), and serves
-//! `HyperforgeHub` over WebSocket JSON-RPC.
+//! `DynamicService` namespaced as `lforge-v5` (D1), and serves
+//! `HyperforgeService` over WebSocket JSON-RPC.
 //!
 //! v4 still builds as `hyperforge-legacy` for one release as a
 //! migration courtesy; will be removed in 6.0.0.
@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use plexus_core::plexus::DynamicHub;
+use plexus_core::plexus::DynamicHub as DynamicService;
 use plexus_transport::TransportServer;
 
-use hyperforge::v5::hub::HyperforgeHub;
+use hyperforge::v5::service::HyperforgeService;
 
 /// CLI arguments for the hyperforge daemon.
 #[derive(Parser, Debug)]
@@ -126,8 +126,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Build the activation tree.
     let lforge = Arc::new(
-        DynamicHub::new("lforge-v5")
-            .register(HyperforgeHub::with_state_dir(config_dir.clone(), &state_dir)),
+        DynamicService::new("lforge-v5")
+            .register(HyperforgeService::with_state_dir(config_dir.clone(), &state_dir)),
     );
 
     tracing::info!(
@@ -137,8 +137,8 @@ async fn main() -> anyhow::Result<()> {
         "hyperforge-v5 starting"
     );
 
-    let rpc_converter = |arc: Arc<DynamicHub>| {
-        DynamicHub::arc_into_rpc_module(arc)
+    let rpc_converter = |arc: Arc<DynamicService>| {
+        DynamicService::arc_into_rpc_module(arc)
             .map_err(|e| anyhow::anyhow!("Failed to create RPC module: {e}"))
     };
 

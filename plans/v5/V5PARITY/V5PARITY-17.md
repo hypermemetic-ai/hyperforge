@@ -9,7 +9,7 @@ unlocks: []
 
 ## Problem
 
-Every hub today returns a single grab-bag enum (`WorkspacesEvent`, `RepoEvent`, `OrgsEvent`, `BuildEvent`, `SecretsEvent`, `HyperforgeV5Event`). `workspaces.clone` and `workspaces.tag` both return `Stream<Item = WorkspacesEvent>` — the type system can't distinguish them, and a fluent client generated from the schema can't either: every workspace method binds to the same union, so calling `client.workspaces.clone()` returns a stream typed against every variant any workspace method might emit.
+Every service today returns a single grab-bag enum (`WorkspacesEvent`, `RepoEvent`, `OrgsEvent`, `BuildEvent`, `SecretsEvent`, `HyperforgeV5Event`). `workspaces.clone` and `workspaces.tag` both return `Stream<Item = WorkspacesEvent>` — the type system can't distinguish them, and a fluent client generated from the schema can't either: every workspace method binds to the same union, so calling `client.workspaces.clone()` returns a stream typed against every variant any workspace method might emit.
 
 This is wrong in both directions:
 - **At the type level:** `workspaces.clone` cannot emit `StatusSnapshot`, but the type permits it. Consumers pattern-match on variants that are statically unreachable.
@@ -45,7 +45,7 @@ The wire shape stays JSON `{"type": "member_git_result", ...}` because of `serde
 
 ## Scope clarifications
 
-- **All five hubs** participate: HyperforgeHub, OrgsHub, ReposHub, WorkspacesHub, BuildHub, SecretsHub.
+- **All five services** participate: HyperforgeService, OrgsService, ReposService, WorkspacesService, BuildService, SecretsService.
 - **Test-scoped methods** (`hyperforge.resolve_secret`, `repos.forge_port_schema`) follow the same convention.
 - **Implementation pattern is the implementer's call** — macro vs hand-written, struct-wrapped variants vs flat. The contract is: each method's `T` enum has variants strictly equal to what the method emits, and the wire format is unchanged.
 

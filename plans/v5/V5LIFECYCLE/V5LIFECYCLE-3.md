@@ -1,6 +1,6 @@
 ---
 id: V5LIFECYCLE-3
-title: "ops::repo::sync_one — single pure sync, called by both hubs"
+title: "ops::repo::sync_one — single pure sync, called by both services"
 status: Complete
 type: implementation
 blocked_by: [V5LIFECYCLE-2]
@@ -31,8 +31,8 @@ Introduce a pure function in `src/v5/ops/repo` (exact path free) with this capab
 `SyncStatus` reuses CONTRACTS §types: `in_sync`, `drifted`, `errored`. No `created` — that's V5PROV-8 / ops::repo::ensure_exists territory (V5LIFECYCLE-4).
 
 Migration:
-- `ReposHub::sync` calls `ops::repo::sync_one`, iterates the `SyncOutcomeEntry` vec, translates each to a `RepoEvent::SyncDiff`.
-- `WorkspacesHub::sync` calls `ops::repo::sync_one` **per workspace member**, collapses the per-remote entries into one per-member SyncDiff (per the V5WS-9 shape contract — "one SyncDiff event per member"), translates to `WorkspacesEvent::SyncDiff`.
+- `ReposService::sync` calls `ops::repo::sync_one`, iterates the `SyncOutcomeEntry` vec, translates each to a `RepoEvent::SyncDiff`.
+- `WorkspacesService::sync` calls `ops::repo::sync_one` **per workspace member**, collapses the per-remote entries into one per-member SyncDiff (per the V5WS-9 shape contract — "one SyncDiff event per member"), translates to `WorkspacesEvent::SyncDiff`.
 - The `compute_drift` function moves to `ops::repo` (or stays private and is called by `sync_one` only). Callers outside `ops` don't reference it.
 
 ## What must NOT change

@@ -66,7 +66,7 @@ Newtypes over `String`, all `#[serde(transparent)]`:
 | `FsPath` | absolute, no `..`, no trailing `/` |
 | `DomainName` | lowercase DNS name |
 
-Validation runs at construction sites in the hubs (e.g.
+Validation runs at construction sites in the services (e.g.
 `is_valid_name`, `is_valid_fspath`); invalid inputs surface as typed
 `Error` events.
 
@@ -148,6 +148,6 @@ secret; the resolved value is). No method that returns `OrgDetail` or
 any other type containing `CredentialEntry` may include resolved
 values. Resolution happens only inside adapters.
 
-The single exception is the `resolve_secret` method on the root hub —
+The single exception is the `resolve_secret` method on the root service —
 which exists for harness reasons (V5CORE-4 acceptance #1) and is
 explicitly excluded from the harness's "root-method count" by name.

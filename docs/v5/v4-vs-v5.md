@@ -37,7 +37,7 @@ that file to be authored by `repos.init` against a v5 daemon.
 
 ## Activation tree
 
-v4 (`HyperforgeHub`):
+v4 (`HyperforgeService`):
 
 ```
 status, reload, begin, orgs_*, config_*, auth_*
@@ -46,7 +46,7 @@ status, reload, begin, orgs_*, config_*, auth_*
 └─ build.*      (manifest, release, dist, run, ...)
 ```
 
-v5 (`HyperforgeHub`):
+v5 (`HyperforgeService`):
 
 ```
 status
@@ -57,13 +57,13 @@ status
 
 Notable shape changes:
 
-- **Lifecycle on the per-noun hubs**, not the root. v4 had `orgs_*`
-  and `config_*` on root; v5 puts CRUD on the hub the noun belongs to.
+- **Lifecycle on the per-noun services**, not the root. v4 had `orgs_*`
+  and `config_*` on root; v5 puts CRUD on the service the noun belongs to.
 - **Instance names are explicit parameters** (`org`, `name`,
   `repo_ref`), never positional CLI segments.
 - **Naming style.** v4 used both `repos_list` (early) and `repo list`
   (current); v5 uses `repos list` (plural noun, space-separated). The
-  CLI shape is `synapse -P 44105 lforge-v5 hyperforge <hub> <method>`.
+  CLI shape is `synapse -P 44105 lforge-v5 hyperforge <service> <method>`.
 - **No `build.*` namespace.** Out of scope for v5 (V5PARITY-9/10/11
   will port what remains useful).
 

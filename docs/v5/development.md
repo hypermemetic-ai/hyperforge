@@ -89,7 +89,7 @@ so the run uses real credentials against the disposable repo named in
 
 ## DRY invariants (D13 / V5LIFECYCLE-11)
 
-The core architectural rule: **hubs do not touch state directly**.
+The core architectural rule: **services do not touch state directly**.
 Every YAML read/write, every `ForgePort` adapter call, every
 `.hyperforge/config.toml` interaction goes through `src/v5/ops/`.
 
@@ -105,11 +105,11 @@ grep -RE 'compute_drift' src/v5/ | grep -v '^src/v5/ops/'             # → empt
 ```
 
 Any non-empty match is a regression. If you find yourself reaching for
-`serde_yaml` or `adapter.something()` from inside a hub method, that's
+`serde_yaml` or `adapter.something()` from inside a service method, that's
 a sign you should add a function under `src/v5/ops/<module>.rs` and
 call that.
 
-## The hub-method-to-ops translation pattern
+## The service-method-to-ops translation pattern
 
 A typical method body:
 
@@ -177,14 +177,14 @@ for shape.
 
 | Path | Owns |
 |---|---|
-| `src/v5/hub.rs` | Root `HyperforgeHub`, `status`, `resolve_secret`, child accessors |
-| `src/v5/orgs.rs` | `OrgsHub` — CRUD + credentials |
-| `src/v5/repos.rs` | `ReposHub` — CRUD, lifecycle, sync/push, import, git transport |
-| `src/v5/workspaces.rs` | `WorkspacesHub` — CRUD, reconcile, sync, discover, workspace-parallel git |
+| `src/v5/service.rs` | Root `HyperforgeService`, `status`, `resolve_secret`, child accessors |
+| `src/v5/orgs.rs` | `OrgsService` — CRUD + credentials |
+| `src/v5/repos.rs` | `ReposService` — CRUD, lifecycle, sync/push, import, git transport |
+| `src/v5/workspaces.rs` | `WorkspacesService` — CRUD, reconcile, sync, discover, workspace-parallel git |
 | `src/v5/config.rs` | YAML schema types (`OrgConfig`, `WorkspaceConfig`, etc.) + load/save |
 | `src/v5/secrets.rs` | `SecretRef`, `SecretResolver`, `YamlSecretStore` |
 | `src/v5/adapters/` | `ForgePort` trait + GitHub/Codeberg/GitLab adapters |
-| `src/v5/ops/state.rs` | YAML I/O facade for hubs |
+| `src/v5/ops/state.rs` | YAML I/O facade for services |
 | `src/v5/ops/repo.rs` | provider derivation, drift compute, forge-call wrappers, sync_one, lifecycle mutations |
 | `src/v5/ops/git.rs` | git CLI subprocess wrappers |
 | `src/v5/ops/fs.rs` | `.hyperforge/config.toml` read/write |

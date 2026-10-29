@@ -1,6 +1,6 @@
 //! Unified manifest parsing for Cargo.toml, package.json, pyproject.toml.
 //!
-//! Each parser yields a `PackageManifest` with the fields BuildHub
+//! Each parser yields a `PackageManifest` with the fields BuildService
 //! surfaces. Unknown / missing optional fields fall back to empty.
 
 use std::collections::BTreeMap;

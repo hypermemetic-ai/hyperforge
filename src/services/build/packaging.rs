@@ -9,8 +9,8 @@ use crate::build_system::BuildSystemKind;
 use crate::commands::runner::{discover_or_bail, run_batch};
 use crate::commands::workspace::build_publish_dep_graph;
 use crate::git::Git;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::{dry_prefix, RepoFilter};
+use crate::service::HyperforgeEvent;
+use crate::services::utils::{dry_prefix, RepoFilter};
 use crate::package::DriftResult;
 
 /// Result of a version bump + commit + tag operation.
@@ -40,7 +40,7 @@ fn bump_commit_tag(
                     package_name: package_name.to_string(),
                     version: new_version.to_string(),
                     registry: registry_kind_for(build_system),
-                    action: crate::hub::PublishActionKind::Failed,
+                    action: crate::service::PublishActionKind::Failed,
                     success: false,
                     error: Some("repo has uncommitted changes — commit or stash first".to_string()),
                 });
@@ -52,7 +52,7 @@ fn bump_commit_tag(
                 package_name: package_name.to_string(),
                 version: new_version.to_string(),
                 registry: registry_kind_for(build_system),
-                action: crate::hub::PublishActionKind::Failed,
+                action: crate::service::PublishActionKind::Failed,
                 success: false,
                 error: Some(format!("git status failed: {e}")),
             });
@@ -70,7 +70,7 @@ fn bump_commit_tag(
             package_name: package_name.to_string(),
             version: new_version.to_string(),
             registry: registry_kind_for(build_system),
-            action: crate::hub::PublishActionKind::Failed,
+            action: crate::service::PublishActionKind::Failed,
             success: false,
             error: Some(format!("version bump failed: {e}")),
         });
@@ -111,7 +111,7 @@ fn bump_commit_tag(
                     package_name: package_name.to_string(),
                     version: new_version.to_string(),
                     registry: registry_kind_for(build_system),
-                    action: crate::hub::PublishActionKind::Tag,
+                    action: crate::service::PublishActionKind::Tag,
                     success: true,
                     error: None,
                 });
@@ -127,11 +127,11 @@ fn bump_commit_tag(
     BumpResult { events, success: true }
 }
 
-const fn registry_kind_for(bs: &BuildSystemKind) -> crate::hub::PackageRegistry {
+const fn registry_kind_for(bs: &BuildSystemKind) -> crate::service::PackageRegistry {
     match bs {
-        BuildSystemKind::Cargo => crate::hub::PackageRegistry::CratesIo,
-        BuildSystemKind::Cabal => crate::hub::PackageRegistry::Hackage,
-        _ => crate::hub::PackageRegistry::Npm,
+        BuildSystemKind::Cargo => crate::service::PackageRegistry::CratesIo,
+        BuildSystemKind::Cabal => crate::service::PackageRegistry::Hackage,
+        _ => crate::service::PackageRegistry::Npm,
     }
 }
 
@@ -244,22 +244,22 @@ pub fn package_diff(
             let published_version = published.as_ref().map(|p| p.version.clone());
 
             let mut status = match &published_version {
-                None => crate::hub::PackageStatus::Unpublished,
+                None => crate::service::PackageStatus::Unpublished,
                 Some(pub_v) => {
                     match crate::build_system::version::compare_versions(&item.local_version, pub_v) {
-                        Some(std::cmp::Ordering::Greater) => crate::hub::PackageStatus::Ahead,
-                        Some(std::cmp::Ordering::Equal) => crate::hub::PackageStatus::UpToDate,
-                        Some(std::cmp::Ordering::Less) => crate::hub::PackageStatus::Stale,
-                        None => crate::hub::PackageStatus::Stale,
+                        Some(std::cmp::Ordering::Greater) => crate::service::PackageStatus::Ahead,
+                        Some(std::cmp::Ordering::Equal) => crate::service::PackageStatus::UpToDate,
+                        Some(std::cmp::Ordering::Less) => crate::service::PackageStatus::Stale,
+                        None => crate::service::PackageStatus::Stale,
                     }
                 }
             };
 
             let mut changed_files = None;
-            if matches!(status, crate::hub::PackageStatus::UpToDate) {
+            if matches!(status, crate::service::PackageStatus::UpToDate) {
                 match registry.detect_drift(&item.repo_path, &item.name, &item.local_version).await {
                     Ok(DriftResult::Drifted { changed_files: files }) => {
-                        status = crate::hub::PackageStatus::Drifted;
+                        status = crate::service::PackageStatus::Drifted;
                         if !files.is_empty() {
                             changed_files = Some(files);
                         }
@@ -396,8 +396,8 @@ pub fn publish(
                 yield HyperforgeEvent::PublishStep {
                     package_name: step.name.clone(),
                     version: step.target_version.clone(),
-                    registry: crate::hub::PackageRegistry::CratesIo, // placeholder
-                    action: crate::hub::PublishActionKind::Failed,
+                    registry: crate::service::PackageRegistry::CratesIo, // placeholder
+                    action: crate::service::PublishActionKind::Failed,
                     success: false,
                     error: Some("dependency failed to publish".to_string()),
                 };
@@ -418,7 +418,7 @@ pub fn publish(
                         package_name: step.name.clone(),
                         version: step.target_version.clone(),
                         registry: registry_kind,
-                        action: crate::hub::PublishActionKind::Skip,
+                        action: crate::service::PublishActionKind::Skip,
                         success: true,
                         error: None,
                     };
@@ -430,7 +430,7 @@ pub fn publish(
                         package_name: step.name.clone(),
                         version: step.target_version.clone(),
                         registry: registry_kind,
-                        action: crate::hub::PublishActionKind::Failed,
+                        action: crate::service::PublishActionKind::Failed,
                         success: false,
                         error: Some(msg.clone()),
                     };
@@ -438,9 +438,9 @@ pub fn publish(
                 action => {
                     let is_auto_bump = matches!(action, crate::build_system::publish::PublishAction::AutoBump);
                     let action_kind = match action {
-                        crate::build_system::publish::PublishAction::Publish => crate::hub::PublishActionKind::Publish,
-                        crate::build_system::publish::PublishAction::AutoBump => crate::hub::PublishActionKind::AutoBump,
-                        crate::build_system::publish::PublishAction::InitialPublish => crate::hub::PublishActionKind::InitialPublish,
+                        crate::build_system::publish::PublishAction::Publish => crate::service::PublishActionKind::Publish,
+                        crate::build_system::publish::PublishAction::AutoBump => crate::service::PublishActionKind::AutoBump,
+                        crate::build_system::publish::PublishAction::InitialPublish => crate::service::PublishActionKind::InitialPublish,
                         _ => unreachable!(),
                     };
 
@@ -498,7 +498,7 @@ pub fn publish(
                                         package_name: step.name.clone(),
                                         version: step.target_version.clone(),
                                         registry: registry_kind.clone(),
-                                        action: crate::hub::PublishActionKind::Tag,
+                                        action: crate::service::PublishActionKind::Tag,
                                         success: true,
                                         error: None,
                                     };
@@ -513,7 +513,7 @@ pub fn publish(
                                 package_name: step.name.clone(),
                                 version: step.target_version.clone(),
                                 registry: registry_kind,
-                                action: crate::hub::PublishActionKind::Failed,
+                                action: crate::service::PublishActionKind::Failed,
                                 success: false,
                                 error: pr.error,
                             };
@@ -525,7 +525,7 @@ pub fn publish(
                                 package_name: step.name.clone(),
                                 version: step.target_version.clone(),
                                 registry: registry_kind,
-                                action: crate::hub::PublishActionKind::Failed,
+                                action: crate::service::PublishActionKind::Failed,
                                 success: false,
                                 error: Some(format!("{e}")),
                             };
@@ -631,7 +631,7 @@ pub fn bump(
                 package_name: name.to_string(),
                 version: new_version.clone(),
                 registry: registry_kind_for(&repo.build_system),
-                action: crate::hub::PublishActionKind::AutoBump,
+                action: crate::service::PublishActionKind::AutoBump,
                 success: true,
                 error: None,
             };

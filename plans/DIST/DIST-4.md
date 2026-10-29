@@ -1,11 +1,11 @@
-# DIST-4: ReleasesHub Subactivation
+# DIST-4: ReleasesService Subactivation
 
 blocked_by: [DIST-2]
 unlocks: [DIST-6, DIST-7, DIST-8]
 
 ## Scope
 
-Create `ReleasesHub` as a child subactivation of `RepoHub`, following the `ImagesHub` pattern exactly. Provides CRUD for forge releases and asset uploads via synapse CLI.
+Create `ReleasesService` as a child subactivation of `RepoService`, following the `ImagesService` pattern exactly. Provides CRUD for forge releases and asset uploads via synapse CLI.
 
 ## Methods
 
@@ -48,10 +48,10 @@ ReleaseDelete { repo_name, forge, tag, success, error }
 
 ## Wiring
 
-- New file: `src/hubs/releases.rs`
-- Add `pub mod releases;` to `src/hubs/mod.rs`
-- Register as child of `RepoHub` in `get_child("releases")`
-- Add to `RepoHub::plugin_children()` alongside ImagesHub
+- New file: `src/services/releases.rs`
+- Add `pub mod releases;` to `src/services/mod.rs`
+- Register as child of `RepoService` in `get_child("releases")`
+- Add to `RepoService::plugin_children()` alongside ImagesService
 
 ## Usage
 
@@ -71,7 +71,7 @@ synapse lforge hyperforge repo releases assets --org hypermemetic --name hyperfo
 
 ## Acceptance Criteria
 
-- [ ] ReleasesHub discoverable via `synapse lforge hyperforge repo releases`
+- [ ] ReleasesService discoverable via `synapse lforge hyperforge repo releases`
 - [ ] Can create a release on GitHub and Codeberg
 - [ ] Can upload a binary file as a release asset
 - [ ] Can list releases and their assets

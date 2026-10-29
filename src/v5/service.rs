@@ -1,6 +1,6 @@
-//! `HyperforgeHub` (v5) — root activation for the v5 rewrite.
+//! `HyperforgeService` (v5) — root activation for the v5 rewrite.
 //!
-//! V5CORE-2 scaffolded the hub with a placeholder `status` returning
+//! V5CORE-2 scaffolded the service with a placeholder `status` returning
 //! only `version`. V5CORE-5 pins the full `StatusEvent` shape
 //! (`version` + `config_dir`). V5CORE-6/7/8 attach child stubs,
 //! V5CORE-4 adds `resolve_secret`.
@@ -16,13 +16,13 @@ use futures::Stream;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::v5::ci::{CiHub, CiStore};
-use crate::v5::orgs::OrgsHub;
-use crate::v5::repos::ReposHub;
+use crate::v5::ci::{CiService, CiStore};
+use crate::v5::orgs::OrgsService;
+use crate::v5::repos::ReposService;
 use crate::v5::secrets::{SecretRef, SecretResolver, YamlSecretStore};
-use crate::v5::workspaces::WorkspacesHub;
+use crate::v5::workspaces::WorkspacesService;
 
-/// Events emitted by the v5 root hub.
+/// Events emitted by the v5 root service.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HyperforgeV5Event {
@@ -125,40 +125,40 @@ pub enum HyperforgeV5Event {
 
 /// Root activation for hyperforge v5.
 #[derive(Clone)]
-pub struct HyperforgeHub {
-    state: Arc<HubState>,
+pub struct HyperforgeService {
+    state: Arc<ServiceState>,
 }
 
-/// Shared read-only state the root hub threads into methods.
+/// Shared read-only state the root service threads into methods.
 #[derive(Debug)]
-pub struct HubState {
+pub struct ServiceState {
     /// Absolute, expanded config directory.
     pub config_dir: PathBuf,
     /// HYPERFORGE-22: pipeline runs, kept under the state dir. One store
-    /// per hub, so running stages outlive the call that started them.
+    /// per service, so running stages outlive the call that started them.
     pub ci: Arc<CiStore>,
     /// HYPERFORGE-23: where `build publish` keeps its logs (`publish/`).
     pub state_dir: PathBuf,
 }
 
-impl HyperforgeHub {
-    /// Construct a hub rooted at the given config directory. Pipeline runs
+impl HyperforgeService {
+    /// Construct a service rooted at the given config directory. Pipeline runs
     /// are kept under `<config_dir>/state`; the daemon passes the real state
-    /// dir through [`HyperforgeHub::with_state_dir`].
+    /// dir through [`HyperforgeService::with_state_dir`].
     #[must_use]
     pub fn new(config_dir: PathBuf) -> Self {
         let state_dir = config_dir.join("state");
         Self::with_state_dir(config_dir, &state_dir)
     }
 
-    /// Construct a hub with an explicit state dir (HYPERFORGE-22: where
+    /// Construct a service with an explicit state dir (HYPERFORGE-22: where
     /// pipeline runs, attempts, outputs and logs are kept). Opening it fails
     /// every stage a previous process left running.
     #[must_use]
     pub fn with_state_dir(config_dir: PathBuf, state_dir: &std::path::Path) -> Self {
         let ci = Arc::new(CiStore::open(state_dir));
         Self {
-            state: Arc::new(HubState {
+            state: Arc::new(ServiceState {
                 config_dir,
                 ci,
                 state_dir: state_dir.to_path_buf(),
@@ -173,35 +173,35 @@ impl HyperforgeHub {
     description = "Hyperforge v5 root",
     crate_path = "plexus_core"
 )]
-impl HyperforgeHub {
+impl HyperforgeService {
     /// Orgs namespace — CRUD + credentials. Methods attached by V5ORGS.
     #[plexus_macros::child]
-    fn orgs(&self) -> OrgsHub {
-        OrgsHub::new(self.state.config_dir.clone())
+    fn orgs(&self) -> OrgsService {
+        OrgsService::new(self.state.config_dir.clone())
     }
 
     /// Repos namespace — CRUD + `ForgePort`. Methods attached by V5REPOS.
     #[plexus_macros::child]
-    fn repos(&self) -> ReposHub {
-        ReposHub::with_config_dir(self.state.config_dir.clone())
+    fn repos(&self) -> ReposService {
+        ReposService::with_config_dir(self.state.config_dir.clone())
     }
 
     /// Workspaces namespace — CRUD + reconcile + sync. Methods attached by V5WS.
     #[plexus_macros::child]
-    fn workspaces(&self) -> WorkspacesHub {
-        WorkspacesHub::new(self.state.config_dir.clone())
+    fn workspaces(&self) -> WorkspacesService {
+        WorkspacesService::new(self.state.config_dir.clone())
     }
 
     /// Secrets namespace — V5PARITY-7. RPC surface over the YAML store.
     #[plexus_macros::child]
-    fn secrets(&self) -> crate::v5::secrets_hub::SecretsHub {
-        crate::v5::secrets_hub::SecretsHub::new(self.state.config_dir.clone())
+    fn secrets(&self) -> crate::v5::secrets_service::SecretsService {
+        crate::v5::secrets_service::SecretsService::new(self.state.config_dir.clone())
     }
 
     /// Build namespace — V5PARITY-9/10/11. Manifest, release, dist, exec.
     #[plexus_macros::child]
-    fn build(&self) -> crate::v5::build_hub::BuildHub {
-        crate::v5::build_hub::BuildHub::with_state_dir(
+    fn build(&self) -> crate::v5::build_service::BuildService {
+        crate::v5::build_service::BuildService::with_state_dir(
             self.state.config_dir.clone(),
             self.state.state_dir.clone(),
         )
@@ -210,8 +210,8 @@ impl HyperforgeHub {
     /// CI namespace — HYPERFORGE-22. Pipelines declared in repos; each
     /// registered pipeline is a dynamic child of `ci`.
     #[plexus_macros::child]
-    fn ci(&self) -> CiHub {
-        CiHub::new(self.state.config_dir.clone(), self.state.ci.clone())
+    fn ci(&self) -> CiService {
+        CiService::new(self.state.config_dir.clone(), self.state.ci.clone())
     }
 
     /// Return daemon version and config directory.

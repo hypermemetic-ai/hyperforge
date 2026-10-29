@@ -13,7 +13,7 @@ assert_eq!(schema.methods.len(), 1);
 ```
 Fails with `left: 2, right: 1`.
 
-The `register_default_templates()` method (added in commit 85377df1) is now being picked up by the `#[hub_methods]` macro and included in the schema, so 2 methods appear instead of the expected 1.
+The `register_default_templates()` method (added in commit 85377df1) is now being picked up by the `#[activation]` macro and included in the schema, so 2 methods appear instead of the expected 1.
 
 ## Fix
 
@@ -22,4 +22,4 @@ The `register_default_templates()` method (added in commit 85377df1) is now bein
 assert_eq!(schema.methods.len(), 2);
 ```
 
-**Option B (if register_default_templates shouldn't be in schema):** Move `register_default_templates` out of the `#[hub_methods]` impl block into a separate impl block, or remove its `#[hub_method]` attribute if one was accidentally added.
+**Option B (if register_default_templates shouldn't be in schema):** Move `register_default_templates` out of the `#[activation]` impl block into a separate impl block, or remove its `#[method]` attribute if one was accidentally added.

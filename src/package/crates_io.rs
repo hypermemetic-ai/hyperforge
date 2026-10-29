@@ -7,7 +7,7 @@
 
 use super::{DriftResult, PublishResult, PublishedVersion, RegistryClient};
 use crate::build_system::BuildSystemKind;
-use crate::hub::PackageRegistry;
+use crate::service::PackageRegistry;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::path::Path;

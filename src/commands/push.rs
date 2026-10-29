@@ -226,7 +226,7 @@ pub fn push(path: &Path, options: PushOptions) -> PushResult<PushReport> {
         .large_file_threshold_kb
         .map_or(LARGE_FILE_THRESHOLD, |kb| kb * 1024);
     if !options.dry_run && threshold > 0 {
-        if let Ok(entries) = crate::hubs::build::large_files::scan_repo(path, threshold)
+        if let Ok(entries) = crate::services::build::large_files::scan_repo(path, threshold)
         {
             let blocked: Vec<_> = entries
                 .iter()

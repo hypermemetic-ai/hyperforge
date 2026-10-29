@@ -20,8 +20,8 @@ After all operations flow through LocalForge → materialize, clean up the codeb
 After CONF-5 and CONF-6, no code outside `materialize()` should call `HyperforgeConfig::save()`. Find and remove any remaining calls:
 
 - `src/commands/init.rs` — `config.save()` call replaced by materialize in CONF-5
-- `src/hubs/workspace.rs` — any remaining `config.save()` in move_repos replaced by materialize in CONF-6
-- `src/hubs/repo.rs` — any remaining direct config writes replaced in CONF-5
+- `src/services/workspace.rs` — any remaining `config.save()` in move_repos replaced by materialize in CONF-6
+- `src/services/repo.rs` — any remaining direct config writes replaced in CONF-5
 
 If `init.rs` is only used for its hook installation and SSH wrapper logic (now extracted into materialize), consider removing `init.rs` entirely or reducing it to the hook/SSH helpers that materialize calls.
 

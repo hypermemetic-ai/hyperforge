@@ -243,9 +243,9 @@ pub fn credentials_for_forge(forge: &Forge, org: &str) -> Vec<ResolvedCredential
 // Pre-flight auth checking
 // ---------------------------------------------------------------------------
 
-use crate::auth_hub::storage::YamlStorage;
-use crate::auth_hub::types::SecretPath;
-use crate::hub::HyperforgeEvent;
+use crate::auth_service::storage::YamlStorage;
+use crate::auth_service::types::SecretPath;
+use crate::service::HyperforgeEvent;
 use std::collections::HashSet;
 
 /// Result of a pre-flight credential check for a single credential.

@@ -9,11 +9,11 @@ unlocks: [V5PARITY-10, V5PARITY-11, V5PARITY-12]
 
 ## Problem
 
-v4's `BuildHub` surfaces manifest inspection across a multi-repo workspace (Cargo.toml + package.json unified analysis, drift detection, name-mismatch checks). v5 has zero build surface.
+v4's `BuildService` surfaces manifest inspection across a multi-repo workspace (Cargo.toml + package.json unified analysis, drift detection, name-mismatch checks). v5 has zero build surface.
 
 ## Required behavior
 
-**New activation: `BuildHub`** — static child on `HyperforgeHub`.
+**New activation: `BuildService`** — static child on `HyperforgeService`.
 
 **New module tree: `src/v5/build/`** — sibling of `ops/`. Submodules: `manifest.rs`, `validate.rs`, `diff.rs`. Pure functions operating on a workspace path.
 

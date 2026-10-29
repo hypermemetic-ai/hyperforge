@@ -25,7 +25,7 @@ v5 is metadata-only. No `git clone`, `git fetch`, `git pull`, or git-level `push
 | `is_dirty(dir)` | `status(dir).dirty` shortcut |
 | `set_remote_url(dir, name, url)` | `git -C <dir> remote set-url <name> <url>` |
 
-**RPC methods on ReposHub:**
+**RPC methods on ReposService:**
 
 | Method | Behavior |
 |---|---|

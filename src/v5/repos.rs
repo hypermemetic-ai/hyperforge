@@ -1,4 +1,4 @@
-//! `ReposHub` — v5 repos namespace (V5REPOS-2..14).
+//! `ReposService` — v5 repos namespace (V5REPOS-2..14).
 //!
 //! Methods:
 //! * `forge_port_schema` — wire-surfaced capability introspection (V5REPOS-2).
@@ -425,16 +425,16 @@ pub struct PushErrored {
 }
 
 // ---------------------------------------------------------------------
-// Hub.
+// Service.
 // ---------------------------------------------------------------------
 
 /// Repos namespace. Methods attached here implement V5REPOS-{2..14}.
 #[derive(Clone, Default)]
-pub struct ReposHub {
+pub struct ReposService {
     config_dir: PathBuf,
 }
 
-impl ReposHub {
+impl ReposService {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -598,7 +598,7 @@ fn validation_event(msg: impl Into<String>) -> RepoEvent {
     description = "Repos CRUD + ForgePort",
     crate_path = "plexus_core"
 )]
-impl ReposHub {
+impl ReposService {
     /// V5REPOS-2 / V5PROV-2 capability surface: announces the four D3
     /// fields, the five original error classes plus `conflict` and
     /// `unsupported_visibility`, and the seven trait method names

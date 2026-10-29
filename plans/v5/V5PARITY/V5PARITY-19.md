@@ -36,7 +36,7 @@ workspaces.fetch --name W --filter "{core/*,libs/util}"
 - Public method names — only new optional params get added.
 - Filter syntax is glob (not regex). Keep it predictable from the shell.
 - D6 partial-failure tolerance — filter doesn't change error handling, only which members participate.
-- The non-`workspaces.*` hubs (`repos.*`, `orgs.*`) are out of scope for this ticket.
+- The non-`workspaces.*` services (`repos.*`, `orgs.*`) are out of scope for this ticket.
 
 ## Acceptance criteria
 

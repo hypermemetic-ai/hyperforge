@@ -9,7 +9,7 @@ unlocks: []
 
 ## Goal
 
-Populate the `OrgsHub` stub (registered in V5CORE-6) with the full set of
+Populate the `OrgsService` stub (registered in V5CORE-6) with the full set of
 org CRUD + credential-management methods. At completion, an org can be
 created, inspected, updated, and deleted entirely through synapse RPC — no
 hand-editing of `~/.config/hyperforge/orgs/<org>.yaml` is ever required,

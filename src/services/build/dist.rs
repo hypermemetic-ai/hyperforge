@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use crate::build_system::BuildSystemKind;
 use crate::commands::runner::discover_or_bail;
 use crate::config::HyperforgeConfig;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::{dry_prefix, RepoFilter};
+use crate::service::HyperforgeEvent;
+use crate::services::utils::{dry_prefix, RepoFilter};
 use crate::types::config::{DistChannel, DistConfig};
 
 /// Common cross-compilation targets for Rust binary releases.

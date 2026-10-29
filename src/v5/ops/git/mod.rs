@@ -16,7 +16,7 @@
 //! routes every op through subprocess (regression-isolation aid).
 //!
 //! D13 invariant: this is the only module that spawns `git` processes
-//! or links against `git2`. Hubs route every git op through here.
+//! or links against `git2`. Services route every git op through here.
 
 use std::path::Path;
 

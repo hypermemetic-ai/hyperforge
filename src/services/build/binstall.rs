@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::runner::discover_or_bail;
 use crate::config::HyperforgeConfig;
-use crate::hub::HyperforgeEvent;
-use crate::hubs::utils::{dry_prefix, RepoFilter};
+use crate::service::HyperforgeEvent;
+use crate::services::utils::{dry_prefix, RepoFilter};
 use crate::types::Forge;
 
 // ---------------------------------------------------------------------------

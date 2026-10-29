@@ -39,10 +39,10 @@ Workspace methods reimplemented the same operations with subtle differences:
 discover → filter → call repo method per repo in parallel → aggregate results
 ```
 
-Both `RepoHub` and `WorkspaceHub` hold the same `HyperforgeState` (all `Arc`-wrapped, `Clone` is cheap). WorkspaceHub constructs a `RepoHub` trivially:
+Both `RepoService` and `WorkspaceService` hold the same `HyperforgeState` (all `Arc`-wrapped, `Clone` is cheap). WorkspaceService constructs a `RepoService` trivially:
 
 ```rust
-let repo_hub = RepoHub::new(state.clone());
+let repo_service = RepoService::new(state.clone());
 ```
 
 ## Implementation
@@ -51,7 +51,7 @@ let repo_hub = RepoHub::new(state.clone());
 
 Fixed the repo methods FIRST so that when workspace delegates to them, the fixes come for free.
 
-**`repo set_default_branch`** (`src/hubs/repo.rs`):
+**`repo set_default_branch`** (`src/services/repo.rs`):
 
 After successfully calling `adapter.set_default_branch()` on all forges:
 ```rust
@@ -61,7 +61,7 @@ if errors.is_empty() {
 }
 ```
 
-**`repo purge`** (`src/hubs/repo.rs`):
+**`repo purge`** (`src/services/repo.rs`):
 
 After each successful `adapter.delete_repo()`, immediately track progress:
 ```rust
@@ -75,7 +75,7 @@ local.save_to_yaml().await;
 
 This saves even on partial failure, so `present_on` always reflects reality.
 
-**`repo delete`** (`src/hubs/repo.rs`):
+**`repo delete`** (`src/services/repo.rs`):
 
 After privatization, set the record's visibility:
 ```rust
@@ -86,17 +86,17 @@ if !privatized_forges.is_empty() {
 
 ### Phase 2: DRY workspace methods via delegation
 
-RepoHub methods return `impl Stream<Item = HyperforgeEvent> + Send + 'static`. Workspace collects each stream into a `Vec<HyperforgeEvent>` inside `run_batch`:
+RepoService methods return `impl Stream<Item = HyperforgeEvent> + Send + 'static`. Workspace collects each stream into a `Vec<HyperforgeEvent>` inside `run_batch`:
 
 ```rust
-let repo_hub = RepoHub::new(state.clone());
+let repo_service = RepoService::new(state.clone());
 let items: Vec<_> = repos.into_iter().map(|r| {
-    let hub = Clone::clone(&repo_hub);  // Note: Clone::clone() not hub.clone()
-    (hub, org, name)
+    let service = Clone::clone(&repo_service);  // Note: Clone::clone() not service.clone()
+    (service, org, name)
 }).collect();
 
-let results = run_batch(items, 8, |(hub, org, name): (RepoHub, String, String)| async move {
-    let stream = hub.method(org, name).await;
+let results = run_batch(items, 8, |(service, org, name): (RepoService, String, String)| async move {
+    let stream = service.method(org, name).await;
     tokio::pin!(stream);
     let events: Vec<HyperforgeEvent> = stream.collect().await;
     let has_error = events.iter().any(|e| matches!(e, HyperforgeEvent::Error { .. }));
@@ -104,23 +104,23 @@ let results = run_batch(items, 8, |(hub, org, name): (RepoHub, String, String)| 
 }).await;
 ```
 
-**Important**: Must use `Clone::clone(&repo_hub)` because `#[plexus_macros::hub_methods]` generates an RPC trait with a `clone` method (the RPC endpoint), which shadows `Clone::clone()`. Similarly, `RepoHub::clone(&hub, ...)` for calling the RPC `clone` method (not `Clone`).
+**Important**: Must use `Clone::clone(&repo_service)` because `#[plexus_macros::activation]` generates an RPC trait with a `clone` method (the RPC endpoint), which shadows `Clone::clone()`. Similarly, `RepoService::clone(&service, ...)` for calling the RPC `clone` method (not `Clone`).
 
 #### Delegated methods
 
-**`workspace set_default_branch`** → `repo_hub.set_default_branch(org, name, branch, checkout, path)` per repo via `run_batch`. LocalForge update now happens automatically inside repo method.
+**`workspace set_default_branch`** → `repo_service.set_default_branch(org, name, branch, checkout, path)` per repo via `run_batch`. LocalForge update now happens automatically inside repo method.
 
-**`workspace clone`** → `RepoHub::clone(&hub, org, name, path, forge)` per record via `run_batch`. `local_path` update + materialize now happens automatically.
+**`workspace clone`** → `RepoService::clone(&service, org, name, path, forge)` per record via `run_batch`. `local_path` update + materialize now happens automatically.
 
 **`workspace sync` Phase 7** → Two-part approach:
-- Create/Update ops: delegated to `repo_hub.sync(org, name, dry_run)` — gets `present_on` updates for free
+- Create/Update ops: delegated to `repo_service.sync(org, name, dry_run)` — gets `present_on` updates for free
 - Delete ops (privatization): kept inline — workspace-specific lifecycle logic with no repo-level equivalent
 
-**`workspace init`** → `repo_hub.init(path, forges, org, ...)` per unconfigured repo. Now registers in LocalForge, where previously only wrote config.toml.
+**`workspace init`** → `repo_service.init(path, forges, org, ...)` per unconfigured repo. Now registers in LocalForge, where previously only wrote config.toml.
 
 #### Not delegated (intentionally)
 
-**`workspace push_all`** and **sync Phase 8 push**: Both already share the same `push::push()` free function via `run_batch_blocking`. No LocalForge violations. Delegation through RepoHub would add overhead (stream collection) without fixing any bugs.
+**`workspace push_all`** and **sync Phase 8 push**: Both already share the same `push::push()` free function via `run_batch_blocking`. No LocalForge violations. Delegation through RepoService would add overhead (stream collection) without fixing any bugs.
 
 ### Phase 3: Dead code removal
 
@@ -130,9 +130,9 @@ Removed `sync_apply_diffs` helper (~140 lines) — fully replaced by repo sync d
 
 | File | Change |
 |------|--------|
-| `src/hubs/repo.rs` | Phase 1: LocalForge updates in `set_default_branch`, `purge`, `delete` |
-| `src/hubs/workspace.rs` | Phase 2: Delegated `set_default_branch`, `clone`, `sync` Phase 7, `init` to RepoHub |
-| `src/hubs/workspace.rs` | Phase 3: Removed `sync_apply_diffs` |
+| `src/services/repo.rs` | Phase 1: LocalForge updates in `set_default_branch`, `purge`, `delete` |
+| `src/services/workspace.rs` | Phase 2: Delegated `set_default_branch`, `clone`, `sync` Phase 7, `init` to RepoService |
+| `src/services/workspace.rs` | Phase 3: Removed `sync_apply_diffs` |
 
 Net result: -190 lines, 182/182 tests passing.
 
@@ -142,7 +142,7 @@ Net result: -190 lines, 182/182 tests passing.
 workspace method
   ├── discover + filter (workspace-specific)
   ├── validation gate (workspace-specific, if applicable)
-  ├── run_batch(repos, |repo| repo_hub.method(...))
+  ├── run_batch(repos, |repo| repo_service.method(...))
   │     └── repo method
   │           ├── forge API call
   │           ├── LocalForge update  ← previously missing

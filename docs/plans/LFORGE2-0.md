@@ -44,9 +44,9 @@ version = "2.0.0"
 edition = "2021"
 
 [dependencies]
-# Hub framework integration
-hub-core = { path = "../hub-core" }
-hub-macro = { path = "../hub-macro" }
+# Service framework integration
+plexus-core = { path = "../plexus-core" }
+plexus-macros = { path = "../plexus-macros" }
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -163,7 +163,7 @@ chore: initialize LFORGE2 hyperforge redesign
 - Create fresh worktree for complete redesign
 - Delete all existing source code
 - Set up module structure (types, config, git, package, remote, auth)
-- Add dependencies: hub-core, workos, toml_edit, etc.
+- Add dependencies: plexus-core, workos, toml_edit, etc.
 - Smoke test passes
 
 Starting fresh implementation of repo-local, git-native hyperforge.

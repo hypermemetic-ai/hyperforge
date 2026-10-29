@@ -39,14 +39,14 @@ epic and every ticket. If a ticket contradicts one, the ticket is wrong.
    foreclosed.
 
    ```
-   HyperforgeHub
+   HyperforgeService
    ├─ status                 (method)
-   ├─ orgs                   (static child) → OrgsHub
-   ├─ repos                  (static child) → ReposHub
-   └─ workspaces             (static child) → WorkspacesHub
+   ├─ orgs                   (static child) → OrgsService
+   ├─ repos                  (static child) → ReposService
+   └─ workspaces             (static child) → WorkspacesService
    ```
 
-   Root has no CRUD methods. Lifecycle lives on the per-noun hubs. Instance
+   Root has no CRUD methods. Lifecycle lives on the per-noun services. Instance
    names are explicit parameters on every method that needs one (`org`,
    `name`, `repo_ref`) — never positional CLI segments.
 
@@ -73,10 +73,10 @@ epic and every ticket. If a ticket contradicts one, the ticket is wrong.
 
 | Epic | Title | Unlocks |
 |------|-------|---------|
-| [V5CORE](./V5CORE/V5CORE-1.md)   | Scaffolding, config, harness, hub stubs | all others |
-| [V5ORGS](./V5ORGS/V5ORGS-1.md)   | OrgsHub — CRUD + credentials             | V5WS fixtures |
-| [V5REPOS](./V5REPOS/V5REPOS-1.md) | ReposHub — CRUD + ForgePort + adapters  | V5WS-sync |
-| [V5WS](./V5WS/V5WS-1.md)         | WorkspacesHub — CRUD + reconcile + sync | — |
+| [V5CORE](./V5CORE/V5CORE-1.md)   | Scaffolding, config, harness, service stubs | all others |
+| [V5ORGS](./V5ORGS/V5ORGS-1.md)   | OrgsService — CRUD + credentials             | V5WS fixtures |
+| [V5REPOS](./V5REPOS/V5REPOS-1.md) | ReposService — CRUD + ForgePort + adapters  | V5WS-sync |
+| [V5WS](./V5WS/V5WS-1.md)         | WorkspacesService — CRUD + reconcile + sync | — |
 
 ## Cross-epic dependency DAG
 
@@ -86,7 +86,7 @@ epic and every ticket. If a ticket contradicts one, the ticket is wrong.
         ┌───────────────────────────────┼───────────────────────────────┐
         │                               │                               │
    V5CORE-3                        V5CORE-4                        V5CORE-5..9
-   (config loaders                 (embedded                       (status, three hub
+   (config loaders                 (embedded                       (status, three service
     — yaml schemas,                 secret store,                   stubs, test
     round-trip)                     secrets:// ref                  harness)
         │                            resolver)

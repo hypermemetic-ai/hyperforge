@@ -71,8 +71,8 @@ Phase E: V5PARITY-12, then V5PARITY-13.
 ## What must NOT change
 
 - Every currently-passing v5 test must still pass after each ticket.
-- V5LIFECYCLE-11's DRY grep invariants must stay green. Every new method goes through the `ops::` layer; every new adapter method goes on `ForgePort`; no hub directly invokes `serde_yaml` / `std::fs` outside the exempted modules.
-- v4 code (`src/{adapters,hubs,hub}.rs`, etc.) is reference-only — not modified.
+- V5LIFECYCLE-11's DRY grep invariants must stay green. Every new method goes through the `ops::` layer; every new adapter method goes on `ForgePort`; no service directly invokes `serde_yaml` / `std::fs` outside the exempted modules.
+- v4 code (`src/{adapters,services,service}.rs`, etc.) is reference-only — not modified.
 - The tier-2 test config pattern (`HF_V5_TEST_CONFIG_DIR`) is the only auth-for-tests mechanism.
 
 ## Risks

@@ -6,11 +6,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use hub_core::plexus::{
+use plexus_core::plexus::{
     Activation, ChildRouter, PlexusStream, PlexusError,
     ChildSummary,
 };
-use hub_macro::hub_methods;
+use plexus_macros::activation;
 
 use crate::bridge::{GitRemoteBridge, KeychainBridge};
 use crate::storage::{HyperforgePaths, OrgStorage, GlobalConfig, OrgConfig};
@@ -116,16 +116,16 @@ impl ReposActivation {
     }
 }
 
-#[hub_methods(
+#[activation(
     namespace = "repos",
     version = "1.0.0",
     description = "Repository management",
-    crate_path = "hub_core",
-    hub
+    crate_path = "plexus_core",
+    service
 )]
 impl ReposActivation {
     /// List repositories in this organization
-    #[hub_method(
+    #[method(
         description = "List repositories",
         params(staged = "Show staged repos instead of committed")
     )]
@@ -172,7 +172,7 @@ impl ReposActivation {
     }
 
     /// Create/update a repository configuration
-    #[hub_method(
+    #[method(
         description = "Create or update a repository",
         params(
             repo_name = "Repository name",
@@ -430,7 +430,7 @@ impl ReposActivation {
     }
 
     /// Adopt an existing directory as a hyperforge-managed repository
-    #[hub_method(
+    #[method(
         description = "Adopt an existing directory as a hyperforge repository",
         params(
             repo_name = "Repository name",
@@ -759,7 +759,7 @@ impl ReposActivation {
     }
 
     /// Sync repositories to forges
-    #[hub_method(
+    #[method(
         description = "Sync repositories to forges via Pulumi",
         params(
             repo_name = "Specific repo to sync (optional, syncs all if omitted)",
@@ -1056,7 +1056,7 @@ impl ReposActivation {
     }
 
     /// Mark a repository for deletion
-    #[hub_method(
+    #[method(
         description = "Remove a repository",
         params(
             repo_name = "Repository to remove",
@@ -1118,7 +1118,7 @@ impl ReposActivation {
     }
 
     /// Refresh local state from forge APIs
-    #[hub_method(
+    #[method(
         description = "Query forges and update local discovered state",
         params(
             force = "Refresh even if recently updated"
@@ -1221,7 +1221,7 @@ impl ReposActivation {
     }
 
     /// Compare local desired state vs remote actual state
-    #[hub_method(
+    #[method(
         description = "Show differences between local and remote state",
         params(
             refresh = "Refresh from forges before diffing"
@@ -1384,7 +1384,7 @@ impl ReposActivation {
     }
 
     /// Full bidirectional sync with convergence verification
-    #[hub_method(
+    #[method(
         description = "Full bidirectional sync: refresh, diff, apply, capture, verify",
         params(
             dry_run = "Preview all phases without applying",
@@ -1846,7 +1846,7 @@ impl ReposActivation {
     }
 
     /// Clone a repository from forges and configure remotes
-    #[hub_method(
+    #[method(
         description = "Clone a repository from forges and configure all remotes",
         params(
             repo_name = "Repository to clone",
@@ -2104,7 +2104,7 @@ impl ReposActivation {
     }
 
     /// Clone all repositories for an organization
-    #[hub_method(
+    #[method(
         description = "Clone all repositories for this org, configuring remotes for each",
         params(
             target = "Target directory (repos will be cloned as subdirectories)"

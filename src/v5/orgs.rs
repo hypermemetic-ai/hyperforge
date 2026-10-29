@@ -1,4 +1,4 @@
-//! `OrgsHub` — v5 orgs namespace. V5ORGS attaches CRUD + credential
+//! `OrgsService` — v5 orgs namespace. V5ORGS attaches CRUD + credential
 //! management methods on top of the V5CORE-6 stub.
 //!
 //! Event envelope follows CONTRACTS D9: every event serializes with a
@@ -24,7 +24,7 @@ use crate::v5::config::{
 // Event envelope (D9).
 // ---------------------------------------------------------------------
 
-/// Events emitted by `OrgsHub` methods. `type` is the wire discriminator.
+/// Events emitted by `OrgsService` methods. `type` is the wire discriminator.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OrgsEvent {
@@ -108,16 +108,16 @@ pub enum BootstrapStage {
 }
 
 // ---------------------------------------------------------------------
-// Hub.
+// Service.
 // ---------------------------------------------------------------------
 
-/// Orgs namespace. Holds the config directory shared with the root hub.
+/// Orgs namespace. Holds the config directory shared with the root service.
 #[derive(Clone)]
-pub struct OrgsHub {
+pub struct OrgsService {
     config_dir: Arc<PathBuf>,
 }
 
-impl OrgsHub {
+impl OrgsService {
     #[must_use]
     pub fn new(config_dir: PathBuf) -> Self {
         Self {
@@ -144,7 +144,7 @@ impl OrgsHub {
     description = "Orgs CRUD",
     crate_path = "plexus_core"
 )]
-impl OrgsHub {
+impl OrgsService {
     /// `orgs.list` — stream one `OrgSummary` event per org on disk,
     /// ascending by `OrgName`. No inputs. Read-only. (V5ORGS-2)
     #[plexus_macros::method(description = "List orgs as OrgSummary events")]

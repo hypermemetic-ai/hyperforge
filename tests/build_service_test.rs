@@ -1,17 +1,17 @@
-//! Tests for the `WorkspaceHub` → `BuildHub` split.
+//! Tests for the `WorkspaceService` → `BuildService` split.
 //!
 //! Covers:
-//! - Schema: method lists for both hubs are correct and non-overlapping
-//! - Routing: `DynamicHub` routes to build child hub via dotted paths
+//! - Schema: method lists for both services are correct and non-overlapping
+//! - Routing: `DynamicService` routes to build child service via dotted paths
 //! - Dispatch: build methods actually execute and return typed events
 //! - Utils: shared helpers (`glob_match`, `dry_prefix`)
 
 use futures::StreamExt;
-use hyperforge::hubs::build::BuildHub;
-use hyperforge::hubs::workspace::WorkspaceHub;
-use hyperforge::hubs::HyperforgeState;
-use hyperforge::{HyperforgeEvent, HyperforgeHub};
-use plexus_core::plexus::{Activation, ChildRouter, DynamicHub, PlexusStreamItem};
+use hyperforge::services::build::BuildService;
+use hyperforge::services::workspace::WorkspaceService;
+use hyperforge::services::HyperforgeState;
+use hyperforge::{HyperforgeEvent, HyperforgeService};
+use plexus_core::plexus::{Activation, ChildRouter, DynamicHub as DynamicService, PlexusStreamItem};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -87,9 +87,9 @@ repo_name = "{name}"
 // ============================================================================
 
 #[test]
-fn build_hub_has_correct_methods() {
-    let hub = BuildHub::new();
-    let methods: HashSet<&str> = hub.methods().into_iter().collect();
+fn build_service_has_correct_methods() {
+    let service = BuildService::new();
+    let methods: HashSet<&str> = service.methods().into_iter().collect();
 
     let expected: HashSet<&str> = [
         "unify",
@@ -118,13 +118,13 @@ fn build_hub_has_correct_methods() {
     .into_iter()
     .collect();
 
-    assert_eq!(methods, expected, "BuildHub methods mismatch");
+    assert_eq!(methods, expected, "BuildService methods mismatch");
 }
 
 #[test]
-fn workspace_hub_has_correct_methods() {
-    let hub = WorkspaceHub::new(HyperforgeState::new());
-    let methods: HashSet<&str> = hub.methods().into_iter().collect();
+fn workspace_service_has_correct_methods() {
+    let service = WorkspaceService::new(HyperforgeState::new());
+    let methods: HashSet<&str> = service.methods().into_iter().collect();
 
     let expected: HashSet<&str> = [
         "discover",
@@ -143,13 +143,13 @@ fn workspace_hub_has_correct_methods() {
     .into_iter()
     .collect();
 
-    assert_eq!(methods, expected, "WorkspaceHub methods mismatch");
+    assert_eq!(methods, expected, "WorkspaceService methods mismatch");
 }
 
 #[test]
-fn no_method_overlap_between_hubs() {
-    let build = BuildHub::new();
-    let workspace = WorkspaceHub::new(HyperforgeState::new());
+fn no_method_overlap_between_services() {
+    let build = BuildService::new();
+    let workspace = WorkspaceService::new(HyperforgeState::new());
 
     let build_methods: HashSet<&str> = build.methods().into_iter().collect();
     let workspace_methods: HashSet<&str> = workspace.methods().into_iter().collect();
@@ -163,14 +163,14 @@ fn no_method_overlap_between_hubs() {
 
     assert!(
         non_schema_overlap.is_empty(),
-        "Unexpected method overlap between BuildHub and WorkspaceHub: {non_schema_overlap:?}"
+        "Unexpected method overlap between BuildService and WorkspaceService: {non_schema_overlap:?}"
     );
 }
 
 #[test]
-fn build_hub_schema_metadata() {
-    let hub = BuildHub::new();
-    let schema = hub.plugin_schema();
+fn build_service_schema_metadata() {
+    let service = BuildService::new();
+    let schema = service.plugin_schema();
 
     assert_eq!(schema.namespace, "build");
     assert!(
@@ -181,23 +181,23 @@ fn build_hub_schema_metadata() {
 }
 
 #[test]
-fn root_hub_lists_build_as_child() {
-    let hub = HyperforgeHub::new();
-    let children = hub.plugin_children();
+fn root_service_lists_build_as_child() {
+    let service = HyperforgeService::new();
+    let children = service.plugin_children();
 
     let child_namespaces: Vec<&str> = children.iter().map(|c| c.namespace.as_str()).collect();
 
     assert!(
         child_namespaces.contains(&"build"),
-        "root hub should list 'build' as child, got: {child_namespaces:?}"
+        "root service should list 'build' as child, got: {child_namespaces:?}"
     );
     assert!(
         child_namespaces.contains(&"repo"),
-        "root hub should list 'repo' as child"
+        "root service should list 'repo' as child"
     );
     assert!(
         child_namespaces.contains(&"workspace"),
-        "root hub should list 'workspace' as child"
+        "root service should list 'workspace' as child"
     );
     assert_eq!(child_namespaces.len(), 3);
 }
@@ -207,39 +207,39 @@ fn root_hub_lists_build_as_child() {
 // ============================================================================
 
 #[tokio::test]
-async fn root_hub_routes_to_build_child() {
-    let hub = HyperforgeHub::new();
+async fn root_service_routes_to_build_child() {
+    let service = HyperforgeService::new();
 
-    let child = hub.get_child("build").await;
+    let child = service.get_child("build").await;
     assert!(child.is_some(), "get_child('build') should return Some");
     assert_eq!(child.unwrap().router_namespace(), "build");
 }
 
 #[tokio::test]
-async fn root_hub_routes_to_workspace_child() {
-    let hub = HyperforgeHub::new();
+async fn root_service_routes_to_workspace_child() {
+    let service = HyperforgeService::new();
 
-    let child = hub.get_child("workspace").await;
+    let child = service.get_child("workspace").await;
     assert!(child.is_some(), "get_child('workspace') should return Some");
     assert_eq!(child.unwrap().router_namespace(), "workspace");
 }
 
 #[tokio::test]
-async fn root_hub_rejects_unknown_child() {
-    let hub = HyperforgeHub::new();
-    assert!(hub.get_child("bogus").await.is_none());
+async fn root_service_rejects_unknown_child() {
+    let service = HyperforgeService::new();
+    assert!(service.get_child("bogus").await.is_none());
 }
 
 // ============================================================================
-// Dispatch tests via DynamicHub routing
+// Dispatch tests via DynamicService routing
 // ============================================================================
 
 #[tokio::test]
 async fn route_build_analyze_on_test_workspace() {
     let tmp = make_test_workspace();
-    let hub = Arc::new(DynamicHub::new("test").register(HyperforgeHub::new()));
+    let service = Arc::new(DynamicService::new("test").register(HyperforgeService::new()));
 
-    let stream = hub
+    let stream = service
         .route(
             "hyperforge.build.analyze",
             serde_json::json!({ "path": tmp.path().to_str().unwrap() }),
@@ -264,9 +264,9 @@ async fn route_build_analyze_on_test_workspace() {
 #[tokio::test]
 async fn route_build_detect_name_mismatches() {
     let tmp = make_test_workspace();
-    let hub = Arc::new(DynamicHub::new("test").register(HyperforgeHub::new()));
+    let service = Arc::new(DynamicService::new("test").register(HyperforgeService::new()));
 
-    let stream = hub
+    let stream = service
         .route(
             "hyperforge.build.detect_name_mismatches",
             serde_json::json!({ "path": tmp.path().to_str().unwrap() }),
@@ -297,9 +297,9 @@ async fn route_build_detect_name_mismatches() {
 #[tokio::test]
 async fn route_build_exec_echo() {
     let tmp = make_test_workspace();
-    let hub = Arc::new(DynamicHub::new("test").register(HyperforgeHub::new()));
+    let service = Arc::new(DynamicService::new("test").register(HyperforgeService::new()));
 
-    let stream = hub
+    let stream = service
         .route(
             "hyperforge.build.exec",
             serde_json::json!({
@@ -336,9 +336,9 @@ async fn route_build_exec_echo() {
 #[tokio::test]
 async fn route_build_exec_filter_excludes() {
     let tmp = make_test_workspace();
-    let hub = Arc::new(DynamicHub::new("test").register(HyperforgeHub::new()));
+    let service = Arc::new(DynamicService::new("test").register(HyperforgeService::new()));
 
-    let stream = hub
+    let stream = service
         .route(
             "hyperforge.build.exec",
             serde_json::json!({
@@ -371,9 +371,9 @@ async fn route_build_exec_filter_excludes() {
 #[tokio::test]
 async fn route_build_unify_dry_run() {
     let tmp = make_test_workspace();
-    let hub = Arc::new(DynamicHub::new("test").register(HyperforgeHub::new()));
+    let service = Arc::new(DynamicService::new("test").register(HyperforgeService::new()));
 
-    let stream = hub
+    let stream = service
         .route(
             "hyperforge.build.unify",
             serde_json::json!({
@@ -413,9 +413,9 @@ async fn route_build_unify_dry_run() {
 #[tokio::test]
 async fn route_build_bump_dry_run() {
     let tmp = make_test_workspace();
-    let hub = Arc::new(DynamicHub::new("test").register(HyperforgeHub::new()));
+    let service = Arc::new(DynamicService::new("test").register(HyperforgeService::new()));
 
-    let stream = hub
+    let stream = service
         .route(
             "hyperforge.build.bump",
             serde_json::json!({
@@ -463,9 +463,9 @@ async fn route_build_bump_dry_run() {
 #[tokio::test]
 async fn route_workspace_discover_still_works() {
     let tmp = make_test_workspace();
-    let hub = Arc::new(DynamicHub::new("test").register(HyperforgeHub::new()));
+    let service = Arc::new(DynamicService::new("test").register(HyperforgeService::new()));
 
-    let stream = hub
+    let stream = service
         .route(
             "hyperforge.workspace.discover",
             serde_json::json!({ "path": tmp.path().to_str().unwrap() }),
@@ -507,7 +507,7 @@ async fn route_workspace_discover_still_works() {
 
 #[cfg(test)]
 mod utils_tests {
-    use hyperforge::hubs::utils::{dry_prefix, glob_match};
+    use hyperforge::services::utils::{dry_prefix, glob_match};
 
     #[test]
     fn glob_match_star() {

@@ -20,7 +20,7 @@ workflow, which is the story that forced the epic into existence.
 
 A new `tests/e2e_transport.rs` file (or a dedicated section of an
 existing E2E file) with these scenarios, each asserting its named
-post-state through the shipped hub surface:
+post-state through the shipped service surface:
 
 - **TS-1 — init with SSH (default).** Init a fresh repo without a
   transport flag; remote ends up SSH; transport readable via

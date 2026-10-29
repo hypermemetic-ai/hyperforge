@@ -40,8 +40,8 @@ CONF-7 (cleanup & migration) ◄── CONF-5, CONF-6
 - Implement `materialize(record, path)` that projects LocalForge state to disk (config file + git remotes)
 
 ### Phase 3: Rewire Operations (CONF-5, CONF-6) — depends on CONF-3, CONF-4
-- Rewire repo hub methods to go through LocalForge-first
-- Rewire workspace hub methods to use WorkspaceRunner + config-first flow
+- Rewire repo service methods to go through LocalForge-first
+- Rewire workspace service methods to use WorkspaceRunner + config-first flow
 
 ### Phase 4: Cleanup (CONF-7) — depends on CONF-5, CONF-6
 - Remove dead code, migrate existing repos, update docs
@@ -60,6 +60,6 @@ CONF-7 (cleanup & migration) ◄── CONF-5, CONF-6
 - [CONF-2](CONF-2.md) — Expand RepoRecord to absorb per-repo config fields
 - [CONF-3](CONF-3.md) — Implement `materialize` config projection
 - [CONF-4](CONF-4.md) — Extract WorkspaceRunner concurrency abstraction
-- [CONF-5](CONF-5.md) — Config-first repo hub operations
-- [CONF-6](CONF-6.md) — Config-first workspace hub operations + WorkspaceRunner adoption
+- [CONF-5](CONF-5.md) — Config-first repo service operations
+- [CONF-6](CONF-6.md) — Config-first workspace service operations + WorkspaceRunner adoption
 - [CONF-7](CONF-7.md) — Cleanup, migration, dead code removal

@@ -866,7 +866,7 @@ pub fn force_push_with_retry(path: &Path, remote: &str, branch: &str) -> GitResu
 ///
 /// `Deserialize` + `JsonSchema` are present so Synapse can accept
 /// `--transport ssh|https` as a closed-set enum flag: unknown values are
-/// rejected at CLI parse time, before the call reaches the hub.
+/// rejected at CLI parse time, before the call reaches the service.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]

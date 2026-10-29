@@ -367,16 +367,16 @@ hf_cmd() {
 # per node with {path, activation, methods: [names], children: [names]}.
 #
 # The activation struct name is derived by the name-convention map below:
-# root → HyperforgeHub, orgs → OrgsHub, repos → ReposHub,
-# workspaces → WorkspacesHub. This is an internal harness decision; the
+# root → HyperforgeService, orgs → OrgsService, repos → ReposService,
+# workspaces → WorkspacesService. This is an internal harness decision; the
 # wire contract is namespace presence + method/child names.
 __hf_activation_name() {
     case "$1" in
-        "") echo "HyperforgeHub" ;;
-        orgs) echo "OrgsHub" ;;
-        repos) echo "ReposHub" ;;
-        workspaces) echo "WorkspacesHub" ;;
-        *) printf '%sHub' "$(echo "$1" | sed -e 's/^./\U&/')" ;;
+        "") echo "HyperforgeService" ;;
+        orgs) echo "OrgsService" ;;
+        repos) echo "ReposService" ;;
+        workspaces) echo "WorkspacesService" ;;
+        *) printf '%sService' "$(echo "$1" | sed -e 's/^./\U&/')" ;;
     esac
 }
 

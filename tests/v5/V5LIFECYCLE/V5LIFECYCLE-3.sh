@@ -5,9 +5,9 @@ source "$(dirname "$0")/../harness/lib.sh"
 
 # V5LIFECYCLE-3: ops::repo::sync_one is the single source of truth.
 # Verify:
-#   (a) no hub outside ops/ calls adapter.read_metadata or compute_drift
+#   (a) no service outside ops/ calls adapter.read_metadata or compute_drift
 #       directly;
-#   (b) a sync through ReposHub and a sync through WorkspacesHub on the
+#   (b) a sync through ReposService and a sync through WorkspacesService on the
 #       same fixture produce consistent drift data.
 #
 # (b) is tier-1 only if the test can run without reaching a live forge.
@@ -25,7 +25,7 @@ if [[ -n "$violations" ]]; then
     exit 1
 fi
 
-# (b) minimal end-to-end: both hubs route through ops::repo::sync_one.
+# (b) minimal end-to-end: both services route through ops::repo::sync_one.
 hf_spawn
 hf_load_fixture "org_with_repo"
 

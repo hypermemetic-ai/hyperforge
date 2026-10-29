@@ -8,6 +8,11 @@ use serde::Deserialize;
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// The registry service's root namespace: the new name first, then the one
+/// plexus-registry still serves by default (its `--namespace`), so this works
+/// whichever lands first. The second goes when plexus-registry is renamed.
+const REGISTRY_ROOTS: [&str; 2] = ["registry-service", "registry-hub"];
+
 /// Configuration for connecting to the Plexus registry.
 #[derive(Debug, Clone)]
 pub struct RegistryConfig {
@@ -105,19 +110,34 @@ impl RegistryClient {
     /// TEMP: Subprocess shim — no reconnection or retry logic.
     async fn run_synapse(&self, args: &[&str]) -> Result<String, RegistryError> {
         let port_str = self.config.registry_port.to_string();
-        // TEMP: Full path through registry-hub → registry plugin.
+        // TEMP: Full path through the registry service's root → registry plugin.
         // Synapse only strips root namespace when it matches the first path segment,
-        // and the registry hub's root namespace is "registry-hub", not "registry".
-        let mut cmd_args = vec!["-P", &port_str, "--json", "registry-hub", "registry"];
-        cmd_args.extend_from_slice(args);
+        // and the registry service's root namespace is not "registry". It is
+        // "registry-service" once plexus-registry takes the service naming, and
+        // its old default until then (REGISTRY_ROOTS): the first that answers wins.
+        let mut last = None;
+        for root in REGISTRY_ROOTS {
+            let mut cmd_args = vec!["-P", &port_str, "--json", root, "registry"];
+            cmd_args.extend_from_slice(args);
+            match self.run_synapse_at(&cmd_args).await {
+                Ok(out) => return Ok(out),
+                Err(e @ (RegistryError::SynapseNotFound | RegistryError::RegistryUnreachable(_))) => {
+                    return Err(e)
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or(RegistryError::SynapseNotFound))
+    }
 
+    async fn run_synapse_at(&self, cmd_args: &[&str]) -> Result<String, RegistryError> {
         tracing::debug!(
             "registry shim: synapse {}",
             cmd_args.join(" ")
         );
 
         let output = Command::new("synapse")
-            .args(&cmd_args)
+            .args(cmd_args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()

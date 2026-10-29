@@ -20,7 +20,7 @@ This is the **epic checkpoint** ticket — following the pattern in
 "Epic checkpoint — the state-of-the-epic ticket". Two deliverables:
 
 1. **Automated verification of each user story** through the real
-   Synapse → Plexus → hub → filesystem round-trip.
+   Synapse → Plexus → service → filesystem round-trip.
 2. **A state-of-the-epic map** — green/yellow/red per user story with
    a one-line note on anything non-green.
 
