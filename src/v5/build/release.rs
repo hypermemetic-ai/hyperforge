@@ -1,8 +1,11 @@
 //! `build::release` — version bump logic.
 //!
-//! Pure string manipulation; no I/O. `bump_version_in_cargo_toml`
-//! returns the new file contents + old/new version for the caller to
-//! write + commit.
+//! [`bump_cargo_toml`] is pure string manipulation. HYPERFORGE-44: [`plan`]
+//! is what `build.release` and `build.release_all` may do, checked against
+//! the checkout with nothing written; [`commit_and_tag`] does it.
+
+use std::path::Path;
+use std::process::Command;
 
 use thiserror::Error;
 
@@ -116,4 +119,92 @@ mod tests {
         let raw = "[package]\nversion = \"not-a-version\"\n";
         assert!(bump_cargo_toml(raw, "patch").is_err());
     }
+}
+
+/// HYPERFORGE-44: why a release did not go ahead. `code` is the wire's.
+#[derive(Debug, Clone)]
+pub struct Refusal {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl Refusal {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+}
+
+/// One release, worked out and not yet done.
+#[derive(Debug, Clone)]
+pub struct Plan {
+    pub old: String,
+    pub new: String,
+    pub tag: String,
+    pub branch: String,
+    raw: String,
+    new_text: String,
+}
+
+fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Work out a release, refusing a checkout that would release more than the
+/// bump: a dirty tree, a detached HEAD, a branch that is not `origin`'s,
+/// commits on either side of it, or a tag already taken. Fetches `origin`;
+/// writes nothing else.
+pub fn plan(dir: &Path, kind: &str) -> Result<Plan, Refusal> {
+    use crate::v5::ops::git;
+    let raw = std::fs::read_to_string(dir.join("Cargo.toml"))
+        .map_err(|e| Refusal::new("manifest_not_found", format!("{}: {e}", dir.display())))?;
+    let (old, new, new_text) = bump_cargo_toml(&raw, kind).map_err(|e| Refusal::new(e.code(), e.to_string()))?;
+    git::fetch(dir, Some("origin")).map_err(|e| Refusal::new("fetch_failed", e.to_string()))?;
+    let status = git::status(dir).map_err(|e| Refusal::new(e.code(), e.to_string()))?;
+    if status.dirty() {
+        return Err(Refusal::new("dirty_tree", format!("{} has uncommitted changes", dir.display())));
+    }
+    let branch = status
+        .branch
+        .filter(|b| b != "HEAD")
+        .ok_or_else(|| Refusal::new("detached_head", format!("{} is on no branch", dir.display())))?;
+    let remote = format!("refs/remotes/origin/{branch}");
+    if git_stdout(dir, &["rev-parse", "-q", "--verify", &remote]).is_none() {
+        return Err(Refusal::new("branch_not_on_origin", format!("origin has no {branch}")));
+    }
+    let counts = git_stdout(dir, &["rev-list", "--left-right", "--count", &format!("{remote}...HEAD")])
+        .ok_or_else(|| Refusal::new("fetch_failed", "could not compare with origin"))?;
+    let mut sides = counts.split_whitespace().map(|n| n.parse::<u32>().unwrap_or(u32::MAX));
+    let (behind, ahead) = (sides.next().unwrap_or(u32::MAX), sides.next().unwrap_or(u32::MAX));
+    if ahead > 0 {
+        return Err(Refusal::new(
+            "unpushed_commits",
+            format!("{branch} has {ahead} commit(s) origin lacks: a release would push them too"),
+        ));
+    }
+    if behind > 0 {
+        return Err(Refusal::new("behind_origin", format!("{branch} is {behind} commit(s) behind origin")));
+    }
+    let tag = format!("v{new}");
+    if git_stdout(dir, &["rev-parse", "-q", "--verify", &format!("refs/tags/{tag}")]).is_some() {
+        return Err(Refusal::new("tag_exists", format!("{tag} already exists")));
+    }
+    Ok(Plan { old, new, tag, branch, raw, new_text })
+}
+
+/// Write the bump, commit it and tag it, annotated. A failed commit puts the
+/// manifest back; a failed tag leaves the commit and says so.
+pub fn commit_and_tag(dir: &Path, plan: &Plan) -> Result<(), Refusal> {
+    use crate::v5::ops::git;
+    let cargo = dir.join("Cargo.toml");
+    std::fs::write(&cargo, &plan.new_text).map_err(|e| Refusal::new("io", e.to_string()))?;
+    let committed = git::add(dir, &["Cargo.toml"])
+        .and_then(|()| git::commit(dir, &format!("chore: bump version to {}", plan.new)));
+    if let Err(e) = committed {
+        let _ = std::fs::write(&cargo, &plan.raw);
+        return Err(Refusal::new("commit_failed", e.to_string()));
+    }
+    git::tag_annotated(dir, &plan.tag, &format!("Release {}", plan.tag)).map_err(|e| {
+        Refusal::new("tag_failed", format!("the bump is committed locally, {} is not tagged: {e}", plan.new))
+    })
 }

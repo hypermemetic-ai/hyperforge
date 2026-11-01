@@ -56,11 +56,24 @@ pub enum BuildEvent {
         reference: crate::v5::repos::RepoRefWire,
         tag: String,
     },
+    /// HYPERFORGE-44: what a release would do; nothing was written.
+    ReleasePlanned {
+        #[serde(rename = "ref")]
+        reference: crate::v5::repos::RepoRefWire,
+        old: String,
+        new: String,
+        tag: String,
+        branch: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        channel: Option<String>,
+    },
     ReleaseSummary {
         name: String,
         total: u32,
         ok: u32,
         errored: u32,
+        /// false: a dry run, `ok` counts plans.
+        executed: bool,
     },
 
     // V5PARITY-11 dist/exec events.
@@ -704,9 +717,20 @@ impl BuildService {
             };
             // HYPERFORGE-23: the token reaches the child through its
             // environment, never a shell string (the process table).
+            // HYPERFORGE-46: npm reads NPM_TOKEN only through an npmrc.
+            let npm_auth = if ch == "npm" {
+                match exec::npm_auth_file() {
+                    Ok(f) => Some(f), Err(e) => { yield err(e.code(), e.to_string()); return; }
+                }
+            } else {
+                None
+            };
             let (publish_cmd, envs): (&str, Vec<(&str, String)>) = match ch.as_str() {
                 "crates.io" => ("cargo publish --allow-dirty", vec![("CARGO_REGISTRY_TOKEN", token)]),
-                "npm" => ("npm publish", vec![("NPM_TOKEN", token)]),
+                "npm" => {
+                    let config = npm_auth.as_ref().map(|f| f.path().display().to_string()).unwrap_or_default();
+                    ("npm publish", vec![("NPM_TOKEN", token), ("NPM_CONFIG_USERCONFIG", config)])
+                }
                 "pypi" => ("twine upload dist/*", vec![("TWINE_USERNAME", "__token__".into()), ("TWINE_PASSWORD", token)]),
                 _ => unreachable!(),
             };
@@ -728,7 +752,8 @@ impl BuildService {
         org = "Org name",
         name = "Repo name",
         bump = "major | minor | patch",
-        channel = "Publish channel"
+        channel = "Publish after the tag lands: crates.io | npm | pypi | hackage; none publishes nothing",
+        execute = "Do it; without it the release is planned and nothing is written (default false)"
     ))]
     pub async fn release(
         &self,
@@ -736,101 +761,125 @@ impl BuildService {
         name: String,
         bump: Option<String>,
         channel: Option<String>,
+        execute: Option<bool>,
     ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
+        let service = self.clone();
         stream! {
             let dir = match resolve_single_repo_dir(&config_dir, &org, &name) {
                 Ok(d) => d, Err(e) => { yield err("not_found", e); return; }
             };
-            let cargo = dir.join("Cargo.toml");
-            let raw = match std::fs::read_to_string(&cargo) {
-                Ok(s) => s, Err(e) => { yield err("io", e.to_string()); return; }
+            // HYPERFORGE-44: everything that can be refused is, before a write.
+            let secret_key = match channel.as_deref() {
+                None | Some("hackage") => None,
+                Some("crates.io") => Some("cargo/token"),
+                Some("npm") => Some("npm/token"),
+                Some("pypi") => Some("pypi/token"),
+                Some(other) => { yield err("unknown_channel", other); return; }
             };
-            let kind = bump.unwrap_or_else(|| "patch".into());
-            let (old, new, new_text) = match release::bump_cargo_toml(&raw, &kind) {
-                Ok(t) => t, Err(e) => { yield err(e.code(), e.to_string()); return; }
+            let plan = match release::plan(&dir, bump.as_deref().unwrap_or("patch")) {
+                Ok(p) => p, Err(r) => { yield err(r.code, r.message); return; }
             };
-            if let Err(e) = std::fs::write(&cargo, new_text) {
-                yield err("io", e.to_string()); return;
-            }
-            let _ = crate::v5::ops::git::add(&dir, &["Cargo.toml"]);
-            let _ = crate::v5::ops::git::commit(&dir, &format!("chore: bump version to {new}"));
-            let tag = format!("v{new}");
-            let _ = crate::v5::ops::git::tag(&dir, &tag);
-            yield BuildEvent::VersionBumped {
-                reference: crate::v5::repos::RepoRefWire { org: org.clone(), name: name.clone() },
-                old, new,
-            };
-            // Push current branch + tag via ops::git. We detect the
-            // branch so `release()` works on a fresh clone without
-            // pre-configured upstream tracking.
-            let branch = crate::v5::ops::git::status(&dir)
-                .ok()
-                .and_then(|s| s.branch)
-                .unwrap_or_else(|| "main".into());
-            if let Err(e) = crate::v5::ops::git::push_refs(&dir, "origin", Some(&branch)) {
-                yield err(e.code(), e.to_string()); return;
-            }
-            let _ = crate::v5::ops::git::push_ref(&dir, "origin", &tag);
-            // Publish is tier-2; run only if channel given.
-            if let Some(ch) = channel {
-                let resolver = crate::v5::secrets::YamlSecretStore::new(&config_dir);
-                use crate::v5::secrets::SecretResolver as _;
-                let secret_key = match ch.as_str() {
-                    "crates.io" => "cargo/token",
-                    "npm" => "npm/token",
-                    "pypi" => "pypi/token",
-                    other => { yield err("unknown_channel", other); return; }
+            let reference = crate::v5::repos::RepoRefWire { org: org.clone(), name: name.clone() };
+            if !execute.unwrap_or(false) {
+                yield BuildEvent::ReleasePlanned {
+                    reference,
+                    old: plan.old,
+                    new: plan.new,
+                    tag: plan.tag,
+                    branch: plan.branch,
+                    channel,
                 };
-                let parsed = match crate::v5::secrets::SecretRef::parse(&format!("secrets://{secret_key}")) {
-                    Ok(r) => r, Err(e) => { yield err(e.code(), e.to_string()); return; }
-                };
-                if resolver.resolve(&parsed).is_ok() {
-                    yield BuildEvent::PackagePublished {
-                        reference: crate::v5::repos::RepoRefWire { org: org.clone(), name: name.clone() },
-                        channel: ch,
-                    };
+                return;
+            }
+            if let Some(key) = secret_key {
+                if resolve_store_secret(&config_dir, &format!("secrets://{key}")).is_none() {
+                    yield err("missing_token", format!("no secret at secrets://{key}"));
+                    return;
                 }
             }
-            yield BuildEvent::ReleaseCreated {
-                reference: crate::v5::repos::RepoRefWire { org, name },
-                tag,
+            if let Err(r) = release::commit_and_tag(&dir, &plan) {
+                yield err(r.code, r.message);
+                return;
+            }
+            yield BuildEvent::VersionBumped {
+                reference: reference.clone(),
+                old: plan.old.clone(),
+                new: plan.new.clone(),
             };
+            // `plan` proved the branch level with origin: this is the bump.
+            if let Err(e) = crate::v5::ops::git::push_refs(&dir, "origin", Some(&plan.branch)) {
+                yield err(e.code(), format!("{} is committed and tagged locally, not pushed: {e}", plan.tag));
+                return;
+            }
+            if let Err(e) = crate::v5::ops::git::push_ref(&dir, "origin", &plan.tag) {
+                yield err(e.code(), format!("the bump is pushed, {} is not: {e}", plan.tag));
+                return;
+            }
+            yield BuildEvent::ReleaseCreated { reference, tag: plan.tag };
+            // Publish is the publish road's, and only it says published.
+            if let Some(ch) = channel {
+                let mut published =
+                    Box::pin(service.publish(Some(org), name, Some(ch), None, None, Some(false), Some(true)).await);
+                while let Some(ev) = published.next().await {
+                    yield ev;
+                }
+            }
         }
     }
 
-    #[plexus_macros::method(params(name = "Workspace name"))]
+    #[plexus_macros::method(params(
+        name = "Workspace name",
+        execute = "Bump, commit and tag every member, unpushed; without it each is planned and nothing is written (default false)"
+    ))]
     pub async fn release_all(
         &self,
         name: String,
+        execute: Option<bool>,
     ) -> impl Stream<Item = BuildEvent> + Send + 'static {
         let config_dir = self.config_dir.clone();
         stream! {
             let members = match workspace_members(&config_dir, &name) {
                 Ok(v) => v, Err(e) => { yield err("not_found", e); return; }
             };
+            let executed = execute.unwrap_or(false);
             let total = u32::try_from(members.len()).unwrap_or(u32::MAX);
             let mut ok = 0u32;
             let mut errored = 0u32;
             for (r, dir) in &members {
-                let cargo = dir.join("Cargo.toml");
-                let raw = match std::fs::read_to_string(&cargo) {
-                    Ok(s) => s,
-                    Err(_) => { errored += 1; continue; }
-                };
-                match release::bump_cargo_toml(&raw, "patch") {
-                    Ok((old, new, new_text)) => {
-                        if std::fs::write(&cargo, new_text).is_err() { errored += 1; continue; }
-                        let _ = crate::v5::ops::git::add(dir, &["Cargo.toml"]);
-                        let _ = crate::v5::ops::git::commit(dir, &format!("chore: bump version to {new}"));
-                        let _ = crate::v5::ops::git::tag(dir, &format!("v{new}"));
-                        ok += 1;
-                        yield BuildEvent::VersionBumped { reference: r.clone(), old, new };
+                let plan = match release::plan(dir, "patch") {
+                    Ok(p) => p,
+                    Err(refused) => {
+                        errored += 1;
+                        yield err(refused.code, format!("{}/{}: {}", r.org, r.name, refused.message));
+                        continue;
                     }
-                    Err(_) => { errored += 1; }
+                };
+                if !executed {
+                    ok += 1;
+                    yield BuildEvent::ReleasePlanned {
+                        reference: r.clone(),
+                        old: plan.old,
+                        new: plan.new,
+                        tag: plan.tag,
+                        branch: plan.branch,
+                        channel: None,
+                    };
+                    continue;
+                }
+                match release::commit_and_tag(dir, &plan) {
+                    Ok(()) => {
+                        ok += 1;
+                        yield BuildEvent::VersionBumped { reference: r.clone(), old: plan.old, new: plan.new };
+                    }
+                    Err(refused) => {
+                        errored += 1;
+                        yield err(refused.code, format!("{}/{}: {}", r.org, r.name, refused.message));
+                    }
                 }
             }
-            yield BuildEvent::ReleaseSummary { name, total, ok, errored };
+            yield BuildEvent::ReleaseSummary { name, total, ok, errored, executed };
         }
     }
 

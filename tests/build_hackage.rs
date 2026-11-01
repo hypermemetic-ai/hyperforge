@@ -59,6 +59,7 @@ done
 const FAKE_NPM: &str = r#"#!/bin/sh
 printf 'npm %s\n' "$*" >> ../fake-tool.log
 printf 'npm-token=%s\n' "${NPM_TOKEN:+set}" >> ../fake-tool.log
+if [ -n "$NPM_CONFIG_USERCONFIG" ]; then cat "$NPM_CONFIG_USERCONFIG" >> ../fake-tool.log; fi
 "#;
 
 const FAKE_TWINE: &str = r#"#!/bin/sh

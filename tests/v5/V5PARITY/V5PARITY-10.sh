@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# tier: 1 (bump + release-without-publish)
-# tier: 2 for actual publish flow — skipped when HF_V5_TEST_CONFIG_DIR not set.
+# tier: 1
+# bump + release-without-publish; the publish flow runs when a token exists.
 # V5PARITY-10 acceptance: build.{bump, publish, release, release_all}.
 set -euo pipefail
 source "$(dirname "$0")/../harness/lib.sh"
@@ -67,8 +67,15 @@ out=$(hf_cmd build bump --org demo --name widget --to 1.5.0)
 echo "$out" | hf_assert_event '.type == "version_bumped" and .new == "1.5.0"'
 grep -q 'version = "1.5.0"' "$REPO/Cargo.toml"
 
-# --- build.release without --channel: bumps, pushes, tags, emits release_created ---
+git -C "$REPO" push -q origin main
+
+# --- build.release plans and writes nothing without --execute ---
 out=$(hf_cmd build release --org demo --name widget --bump minor)
+echo "$out" | hf_assert_event '.type == "release_planned" and .tag == "v1.6.0"'
+grep -q 'version = "1.5.0"' "$REPO/Cargo.toml"
+
+# --- build.release without --channel: bumps, pushes, tags, emits release_created ---
+out=$(hf_cmd build release --org demo --name widget --bump minor --execute true)
 echo "$out" | hf_assert_event '.type == "version_bumped" and .new == "1.6.0"'
 echo "$out" | hf_assert_event '.type == "release_created" and .tag == "v1.6.0"'
 # And the tag landed on the remote:
@@ -76,7 +83,9 @@ git -C "$REMOTE" tag --list | grep -q v1.6.0
 
 # --- build.release_all ---
 out=$(hf_cmd build release_all --name main)
-echo "$out" | hf_assert_event '.type == "release_summary" and .total == 1 and .ok == 1'
+echo "$out" | hf_assert_event '.type == "release_summary" and .total == 1 and .ok == 1 and .executed == false'
+out=$(hf_cmd build release_all --name main --execute true)
+echo "$out" | hf_assert_event '.type == "release_summary" and .total == 1 and .ok == 1 and .executed == true'
 
 # --- build.publish: tier-2 skip unless a cargo/token secret exists ---
 if [[ -f "$HF_CONFIG/secrets.yaml" ]] && grep -q '^cargo/token:' "$HF_CONFIG/secrets.yaml" 2>/dev/null; then
