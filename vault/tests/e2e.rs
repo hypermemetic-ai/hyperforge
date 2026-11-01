@@ -14,7 +14,9 @@ use plexus_client::{decode, ClientEvent, MethodRef, Transport, WsTransport};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -24,6 +26,7 @@ use std::time::{Duration, Instant};
 const VAULT: &str = env!("CARGO_BIN_EXE_hyperforge-vault");
 const APPROVE: &str = env!("CARGO_BIN_EXE_vault-approve");
 const RUN: &str = env!("CARGO_BIN_EXE_vault-run");
+#[cfg(target_os = "linux")]
 const GET: &str = env!("CARGO_BIN_EXE_vault-get");
 const ENCRYPT: &str = env!("CARGO_BIN_EXE_vault-encrypt");
 const SHELL_WAIT: Duration = Duration::from_secs(20);
@@ -283,7 +286,10 @@ impl World {
 
     /// Writes the value's sha256 to `out`, or nothing if the command never runs.
     fn hash_script(&self, out: &Path) -> String {
-        format!("printf %s \"$MY_SECRET\" | sha256sum | cut -d' ' -f1 > '{}'", out.display())
+        // A Mac has no coreutils, and its /usr/bin has `shasum`. Both print the
+        // hash, then a space.
+        let sha256 = if cfg!(target_os = "macos") { "shasum -a 256" } else { "sha256sum" };
+        format!("printf %s \"$MY_SECRET\" | {sha256} | cut -d' ' -f1 > '{}'", out.display())
     }
 
     fn audit(&self) -> Vec<Value> {
@@ -478,6 +484,7 @@ struct Caller {
 }
 
 impl Caller {
+    #[cfg(target_os = "linux")]
     fn pid(&self) -> u32 {
         self.child.id()
     }
@@ -776,12 +783,16 @@ fn the_server_holds_no_plaintext() {
         assert!(!source.contains(forbidden), "server.rs mentions {forbidden}");
     }
 
-    // The process image, for what it is worth.
-    assert!(!memory_contains(server.child.id(), w.canary.as_bytes()), "canary in the server's memory");
-    assert!(memory_contains(server.child.id(), b"age-encryption.org"), "control: the scan reads its memory");
+    // The process image, for what it is worth, where `/proc` shows it.
+    #[cfg(target_os = "linux")]
+    {
+        assert!(!memory_contains(server.child.id(), w.canary.as_bytes()), "canary in the server's memory");
+        assert!(memory_contains(server.child.id(), b"age-encryption.org"), "control: the scan reads its memory");
+    }
     server.child.kill().unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn memory_contains(pid: u32, needle: &[u8]) -> bool {
     let maps = fs::read_to_string(format!("/proc/{pid}/maps")).unwrap();
     let mut mem = fs::File::open(format!("/proc/{pid}/mem")).unwrap();
@@ -881,6 +892,7 @@ fn a_request_that_lapsed_while_down_is_expired_after_restart() {
     assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "expired");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn vault_run_keeps_the_value_off_argv_and_out_of_logs() {
     let w = World::new();
@@ -1058,6 +1070,7 @@ fn a_failed_decrypt_is_a_denial_not_an_empty_value() {
     assert!(events.iter().any(|e| e == "deny"), "{events:?}");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn vault_get_prints_to_a_pipe_and_refuses_a_terminal() {
     let w = World::new();
@@ -1653,17 +1666,17 @@ fn recovery_keygen_never_overwrites_a_key() {
 
 /// Tells a binary built with `memory-scan-test` to stay dumpable, so these tests
 /// can read its memory. Any other build has no such switch.
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 const KEEP_DUMPABLE: &str = "VAULT_TEST_KEEP_DUMPABLE";
 
 /// How long a released value was seen to outlive its release (HYPE-22).
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 const AFTER_RELEASE: Duration = Duration::from_millis(300);
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 const RELEASES: usize = 3;
 
 /// One value in every age chunk, so a chunk left anywhere is a hit.
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 fn across_chunks(canary: &str) -> Vec<u8> {
     let mut value = Vec::new();
     while value.len() < 300_000 {
@@ -1675,6 +1688,7 @@ fn across_chunks(canary: &str) -> Vec<u8> {
 
 /// A port that takes the connection and never speaks: `vault-encrypt` stops
 /// there, its encrypting done, for as long as a test wants to look at it.
+#[cfg(target_os = "linux")]
 fn silent_port() -> (std::net::TcpListener, String) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -1706,11 +1720,13 @@ fn limits_bind_this_user() -> bool {
     unsafe { libc::geteuid() != 0 }
 }
 
+#[cfg(target_os = "linux")]
 fn proc_field(pid: u32, file: &str, field: &str) -> String {
     let text = fs::read_to_string(format!("/proc/{pid}/{file}")).unwrap();
     text.lines().find(|l| l.starts_with(field)).unwrap_or_else(|| panic!("no {field} in {file}: {text}")).to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn assert_cannot_be_dumped(pid: u32) {
     let core = proc_field(pid, "limits", "Max core file size");
     assert_eq!(core.split_whitespace().nth(4), Some("0"), "{core}");
@@ -1718,6 +1734,7 @@ fn assert_cannot_be_dumped(pid: u32) {
     assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied, "the process is dumpable: {denied}");
 }
 
+#[cfg(target_os = "linux")]
 fn assert_memory_is_locked(pid: u32) {
     let line = proc_field(pid, "status", "VmLck");
     let locked: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
@@ -1727,7 +1744,7 @@ fn assert_memory_is_locked(pid: u32) {
 /// Where a freed block lands is the allocator's business, and one look at one
 /// release misses it about one time in five on this code. So: a look after each
 /// of several releases, in one process, any hit failing.
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 fn a_released_value_leaves_the_approvers_memory(w: &World, value: &[u8]) {
     let _server = w.server();
     assert!(w.encrypt_value("s", value).status.success());
@@ -1754,20 +1771,20 @@ fn a_released_value_leaves_the_approvers_memory(w: &World, value: &[u8]) {
 }
 
 #[test]
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 fn a_short_value_is_gone_from_the_approver_after_its_release() {
     let w = World::new();
     a_released_value_leaves_the_approvers_memory(&w, &w.value);
 }
 
 #[test]
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 fn every_chunk_of_a_long_value_is_gone_from_the_approver_after_its_release() {
     let w = World::new();
     a_released_value_leaves_the_approvers_memory(&w, &across_chunks(&w.canary));
 }
 
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 fn the_encrypter_forgets_what_it_encrypted(w: &World, value: &[u8]) {
     let (listener, url) = silent_port();
     let name = format!("scan-{}", &sha_hex(w.canary.as_bytes())[..16]);
@@ -1797,14 +1814,14 @@ fn the_encrypter_forgets_what_it_encrypted(w: &World, value: &[u8]) {
 }
 
 #[test]
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 fn a_short_value_is_gone_from_the_encrypter_once_encrypted() {
     let w = World::new();
     the_encrypter_forgets_what_it_encrypted(&w, &w.value);
 }
 
 #[test]
-#[cfg(feature = "memory-scan-test")]
+#[cfg(all(feature = "memory-scan-test", target_os = "linux"))]
 fn every_chunk_of_a_long_value_is_gone_from_the_encrypter_once_encrypted() {
     let w = World::new();
     the_encrypter_forgets_what_it_encrypted(&w, &across_chunks(&w.canary));
@@ -1813,6 +1830,7 @@ fn every_chunk_of_a_long_value_is_gone_from_the_encrypter_once_encrypted() {
 /// No hook set: what a real run gets. A core piped to a handler ignores
 /// RLIMIT_CORE, so the limit alone is not enough, and being undumpable also
 /// shuts `/proc/<pid>/mem` to this user's other processes.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_owners_tools_cannot_be_dumped_and_lock_their_memory() {
     let w = World::new();
@@ -2151,6 +2169,7 @@ fn recovery_refuses_a_wrong_key_and_prints_no_part_of_a_truncated_value() {
     refused_with(&w.recover("s", &o).output().unwrap(), "reading");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn recovery_refuses_a_terminal_unless_told() {
     let w = World::new();
