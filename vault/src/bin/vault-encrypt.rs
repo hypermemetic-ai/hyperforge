@@ -3,12 +3,14 @@
 
 #[path = "../platform.rs"]
 mod platform;
+#[path = "shared/workos.rs"]
+mod workos;
 
 use anyhow::{bail, Context};
 use clap::Parser;
 use hyperforge_vault::client::Rpc;
-use hyperforge_vault::login::WorkosArgs;
 use hyperforge_vault::{keys, manifest};
+use workos::WorkosArgs;
 use hyperforge_vault::wire::{is_age_format, valid_secret_name};
 use serde_json::json;
 use std::os::fd::AsFd;
