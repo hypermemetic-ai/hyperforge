@@ -34,6 +34,7 @@ struct State {
     /// Every device request, as it arrived.
     seen_authorize: Vec<Seen>,
     seen_polls: Vec<Seen>,
+    seen_refreshes: Vec<Seen>,
 }
 
 /// One answer from the fake.
@@ -148,6 +149,19 @@ impl Idp {
     pub fn seen_polls(&self) -> Vec<Seen> {
         self.state.lock().unwrap().seen_polls.clone()
     }
+
+    pub fn seen_refreshes(&self) -> Vec<Seen> {
+        self.state.lock().unwrap().seen_refreshes.clone()
+    }
+
+    /// One POST, for a test of the fake itself. Answers the whole response.
+    pub fn post(&self, path: &str, content_type: &str, body: &str) -> String {
+        let mut stream = TcpStream::connect(self.base.trim_start_matches("http://")).unwrap();
+        write!(stream, "POST {path} HTTP/1.1\r\nHost: fake\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
 }
 
 fn sign(kid: &str, pem: &str, claims: &Value) -> String {
@@ -250,7 +264,17 @@ fn serve(mut stream: TcpStream, base: &str, state: &Mutex<State>) {
             Some(_) => answer(&mut stream, "400 Bad Request", r#"{"error":"invalid_request"}"#),
             None => answer(&mut stream, "404 Not Found", "{}"),
         }
-    } else if path == "/user_management/authenticate" && content_type.starts_with("application/x-www-form-urlencoded") {
+    } else if path == "/user_management/authenticate" && !content_type.starts_with("application/x-www-form-urlencoded") {
+        // The docs for a public client show a form, for both grants.
+        answer(&mut stream, "400 Bad Request", r#"{"error":"invalid_request"}"#);
+    } else if path == "/user_management/authenticate" && seen(&content_type, &body).form.get("grant_type").map(String::as_str) == Some("refresh_token") {
+        let seen = seen(&content_type, &body);
+        state.lock().unwrap().seen_refreshes.push(seen.clone());
+        match authenticate(&seen, base, state) {
+            Some(tokens) => answer(&mut stream, "200 OK", &tokens.to_string()),
+            None => answer(&mut stream, "400 Bad Request", r#"{"error":"invalid_grant"}"#),
+        }
+    } else if path == "/user_management/authenticate" {
         let seen = seen(&content_type, &body);
         let mut state = state.lock().unwrap();
         state.seen_polls.push(seen.clone());
@@ -269,12 +293,6 @@ fn serve(mut stream: TcpStream, base: &str, state: &Mutex<State>) {
             Some(reply) => send(&mut stream, reply),
             None => answer(&mut stream, "400 Bad Request", r#"{"error":"invalid_grant"}"#),
         }
-    } else if path == "/user_management/authenticate" {
-        let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-        match authenticate(&request, base, state) {
-            Some(tokens) => answer(&mut stream, "200 OK", &tokens.to_string()),
-            None => answer(&mut stream, "400 Bad Request", r#"{"error":"invalid_grant"}"#),
-        }
     } else {
         answer(&mut stream, "404 Not Found", "{}");
     }
@@ -282,12 +300,12 @@ fn serve(mut stream: TcpStream, base: &str, state: &Mutex<State>) {
 
 /// The refresh path, checked the way WorkOS checks it: a public client, no
 /// secret, and a refresh token that works once. The device grant is `serve`'s.
-fn authenticate(request: &Value, base: &str, state: &Mutex<State>) -> Option<Value> {
-    if request["client_id"] != CLIENT || request.get("client_secret").is_some() {
+fn authenticate(seen: &Seen, base: &str, state: &Mutex<State>) -> Option<Value> {
+    if !is_public_form(seen) {
         return None;
     }
     let mut state = state.lock().unwrap();
-    if request["grant_type"] != "refresh_token" || state.refresh.as_deref() != request["refresh_token"].as_str() || state.refresh.is_none() {
+    if state.refresh.is_none() || state.refresh.as_ref() != seen.form.get("refresh_token") {
         return None;
     }
     state.refreshes += 1;

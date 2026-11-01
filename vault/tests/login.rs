@@ -574,12 +574,39 @@ fn the_stored_sign_in_refreshes_and_rotates() {
     assert!(ran.failed(), "{}", ran.all());
 
     assert_eq!(b.idp.refreshes(), 1, "{}", ran.all());
+    let refreshes = b.idp.seen_refreshes();
+    assert_eq!(refreshes.len(), 1);
+    assert!(refreshes[0].content_type.starts_with("application/x-www-form-urlencoded"), "{}", refreshes[0].content_type);
+    assert_eq!(refreshes[0].form["grant_type"], "refresh_token");
+    assert_eq!(refreshes[0].form["refresh_token"], refresh);
+    assert_eq!(refreshes[0].form["client_id"], CLIENT);
+    assert_eq!(refreshes[0].form.len(), 3, "{:?}", refreshes[0].form.keys());
     let tokens = stored(&b.file);
     assert_ne!(tokens["refresh_token"], refresh.as_str(), "the rotated token is on disk");
     assert!(tokens["refresh_token"].as_str().unwrap().starts_with("refresh-"));
     assert!(idp_expiry(tokens["access_token"].as_str().unwrap()) > idp::now() + 3000);
     fs::remove_file(&recovery).unwrap();
     b.assert_no_leak(&[tokens["access_token"].as_str().unwrap(), tokens["refresh_token"].as_str().unwrap(), &refresh, &b.device_code]);
+}
+
+/// The docs for a public client show a form. The same grant as JSON changes
+/// nothing, and the token it named still works.
+#[test]
+fn the_fake_refuses_a_refresh_sent_as_json() {
+    let b = Bench::new();
+    let refresh = format!("refresh-{}", nonce());
+    b.idp.accept_refresh(&refresh, 3600);
+    let path = "/user_management/authenticate";
+
+    let body = json!({"client_id": CLIENT, "grant_type": "refresh_token", "refresh_token": refresh}).to_string();
+    let refused = b.idp.post(path, "application/json", &body);
+    assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+    assert_eq!(b.idp.refreshes(), 0);
+
+    let form = format!("client_id={CLIENT}&grant_type=refresh_token&refresh_token={refresh}");
+    let taken = b.idp.post(path, "application/x-www-form-urlencoded", &form);
+    assert!(taken.starts_with("HTTP/1.1 200"), "{taken}");
+    assert_eq!(b.idp.refreshes(), 1);
 }
 
 fn idp_expiry(token: &str) -> i64 {
