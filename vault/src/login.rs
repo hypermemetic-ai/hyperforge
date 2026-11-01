@@ -26,7 +26,7 @@ use plexus_auth_core::capabilities::IssuerUrl;
 use plexus_auth_core::oidc::{Audience, AudienceClaim, OidcConfig, OidcError, OidcValidator};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -105,9 +105,11 @@ impl Login {
         Ok(Login { client_id, base: base.trim_end_matches('/').to_string(), file, http: http()? })
     }
 
-    async fn authenticate(&self, grant: Value) -> anyhow::Result<Tokens> {
+    /// A form, as WorkOS's CLI Auth docs show it and as [`Login::poll`] sends.
+    async fn refresh(&self, refresh_token: &str) -> anyhow::Result<Tokens> {
         let url = format!("{}/user_management/authenticate", self.base);
-        let response = self.http.post(&url).json(&grant).send().await.with_context(|| format!("reaching {url}"))?;
+        let form = [("grant_type", "refresh_token"), ("refresh_token", refresh_token), ("client_id", self.client_id.as_str())];
+        let response = self.http.post(&url).form(&form).send().await.with_context(|| format!("reaching {url}"))?;
         let status = response.status();
         if !status.is_success() {
             // The status and nothing else: an error body may echo the grant.
@@ -126,8 +128,7 @@ impl Login {
         if expiry(&tokens.access_token).is_some_and(|exp| exp > good_until) {
             return Ok(Zeroizing::new(tokens.access_token.clone()));
         }
-        let grant = json!({"client_id": self.client_id, "grant_type": "refresh_token", "refresh_token": tokens.refresh_token});
-        let fresh = self.authenticate(grant).await.context("refreshing the sign-in: run vault-login if this persists")?;
+        let fresh = self.refresh(&tokens.refresh_token).await.context("refreshing the sign-in: run vault-login if this persists")?;
         write_tokens(&self.file, &fresh)?;
         Ok(Zeroizing::new(fresh.access_token.clone()))
     }
@@ -305,6 +306,7 @@ pub async fn sign_in(login: &Login, owner: &str, show: impl FnOnce(&Prompt)) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn token_ending(exp: i64) -> String {
         format!("h.{}.s", URL_SAFE_NO_PAD.encode(json!({"exp": exp}).to_string()))
