@@ -1,9 +1,17 @@
 //! Signs the owner in to WorkOS and stores the tokens for `vault-approve` and
-//! `vault-encrypt`. A public client: PKCE, loopback redirect, no secret.
+//! `vault-encrypt`. A public client: PKCE, loopback redirect, no secret. The
+//! refresh token crosses this heap, so it gets what the other tools get.
+
+#[path = "../platform.rs"]
+mod platform;
 
 use clap::Parser;
 use hyperforge_vault::login::{sign_in, LoginRequest, WorkosArgs};
 use std::process::{Command, Stdio};
+
+/// Everything freed in this process is wiped: see `platform`.
+#[global_allocator]
+static HEAP: platform::Zeroing = platform::Zeroing(std::alloc::System);
 
 #[derive(Parser, Debug)]
 #[command(name = "vault-login", about = "Sign the vault's owner in to WorkOS")]
@@ -29,6 +37,7 @@ fn open(url: &str) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    platform::undumpable()?;
     let args = Args::parse();
     let login = args.workos.login()?;
     let request = LoginRequest { redirect_uri: &args.redirect_uri, provider: &args.provider };

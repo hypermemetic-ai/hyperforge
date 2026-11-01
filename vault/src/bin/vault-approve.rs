@@ -49,7 +49,7 @@ struct Args {
     #[arg(long)]
     once: bool,
     /// Accepted and redundant: watching stops at startup if memory cannot be
-    /// locked out of swap, and sends no seal if a block fails to lock later.
+    /// locked out of swap, and sends no seal for a request whose blocks fail to lock.
     #[arg(long = "require-memory-lock", hide = true)]
     _require_memory_lock: bool,
 }
@@ -213,8 +213,10 @@ async fn handle(args: &Watch, login: &Login, request: &RequestSummary) -> anyhow
         return Ok(Outcome::Refused);
     }
     let (identity, key) = (args.identity.clone(), request.one_time_pubkey.clone());
+    // This request's blocks and no others: see `LockWatch`.
+    let locks = platform::LockWatch::begin();
     let sealed = keys::with_deadline(DECRYPT_TIMEOUT, move || keys::reseal(&identity, keys::FORMATS, &ciphertext, &key)).await;
-    let sealed = sealed.and_then(|sealed| platform::check_locks(true).map(|()| sealed));
+    let sealed = sealed.and_then(|sealed| locks.check(true).map(|()| sealed));
     match sealed {
         Ok(sealed) => {
             owner_call(args, login, "fulfill", json!({"id": request.id, "sealed": sealed})).await?;

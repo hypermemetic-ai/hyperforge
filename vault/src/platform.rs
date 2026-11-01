@@ -53,9 +53,6 @@ unsafe fn lock_block(ptr: *mut u8, size: usize) {
 /// limit would: a long-running tool reusing one page gets there. So each lock
 /// there has its unlock, and a page shared with a live block stays locked.
 ///
-/// Linux keeps no count: one `munlock` would unlock that neighbour, so nothing is
-/// unlocked there. A page the allocator gives back stops being locked by going
-/// away.
 ///
 /// # Safety
 /// `ptr` is a live block of `size` bytes.
@@ -67,8 +64,24 @@ unsafe fn unlock_block(ptr: *mut u8, size: usize) {
     }
 }
 
+/// Linux keeps no count: one `munlock` would unlock a neighbour on a shared page.
+/// So there only the pages wholly inside the block are unlocked, which no other
+/// block can be on. Left locked, a large value's pages would hold the quota after
+/// the value had gone, and a failed lock would outlive the request that caused it.
+///
+/// # Safety
+/// `ptr` is a live block of `size` bytes, already wiped.
 #[cfg(not(target_vendor = "apple"))]
-unsafe fn unlock_block(_: *mut u8, _: usize) {}
+unsafe fn unlock_block(ptr: *mut u8, size: usize) {
+    if LOCKING.load(Ordering::Relaxed) {
+        let page = PAGE.load(Ordering::Relaxed);
+        let start = (ptr as usize).div_ceil(page) * page;
+        let end = (ptr as usize + size) & !(page - 1);
+        if end > start {
+            libc::munlock(start as *const libc::c_void, end - start);
+        }
+    }
+}
 
 // SAFETY: every method hands the caller's layout to `A` unchanged. Zeroing writes
 // only inside the block being freed, and allocates nothing.
@@ -134,14 +147,30 @@ pub fn require_or_warn(locked: Result<(), String>, require: bool) -> anyhow::Res
     Ok(())
 }
 
-/// A block that did not lock, once there is a value about. For a long-running
-/// tool the probe at the start says nothing about the heap of an hour later.
-pub fn check_locks(require: bool) -> anyhow::Result<()> {
-    let failures = lock_failures();
-    if failures == 0 {
-        return Ok(());
+/// Whether one piece of work ran on locked memory. Begin it before the first block
+/// that holds a value is asked for: every block the work asks for after that is
+/// tried at that moment, so one that fails is counted here, and a block that failed
+/// long ago, for something else, is not. A count kept since startup would turn one
+/// failure into a refusal of everything after it, until a restart, for a value that
+/// was never at risk. Blocks from other threads count too: that only ever refuses.
+pub struct LockWatch {
+    failures_before: usize,
+}
+
+impl LockWatch {
+    pub fn begin() -> Self {
+        LockWatch { failures_before: lock_failures() }
     }
-    require_or_warn(Err(format!("{failures} heap blocks did not lock")), require)
+
+    /// Whether every block since [`LockWatch::begin`] locked. For a long-running
+    /// tool the probe at the start says nothing about the heap of an hour later.
+    pub fn check(&self, require: bool) -> anyhow::Result<()> {
+        let failures = lock_failures() - self.failures_before;
+        if failures == 0 {
+            return Ok(());
+        }
+        require_or_warn(Err(format!("{failures} heap blocks did not lock")), require)
+    }
 }
 
 /// A core dump of a process holding a value would be a value on disk.

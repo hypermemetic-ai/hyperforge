@@ -1834,12 +1834,14 @@ fn a_failed_lock_refuses_that_request_and_not_the_next() {
     }
     let w = World::new();
     let _server = w.server();
-    let large = vec![b'x'; 600 * 1024];
+    // As large as the server stores, once armored.
+    let large = vec![b'x'; 700 * 1024];
     assert!(w.encrypt_value("large", &large).status.success());
     assert!(w.encrypt_value("small", b"a small value\n").status.success());
 
     let mut approver = w.command(APPROVE);
-    set_memlock_limit(&mut approver, 512 * 1024);
+    // Room for an ordinary request, and not for the large one.
+    set_memlock_limit(&mut approver, 768 * 1024);
     approver.env_remove("PLEXUS_WS_TRACE");
     let mut approver = w.approver_from(approver, &w.owner);
 
