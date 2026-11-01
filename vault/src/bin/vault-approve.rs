@@ -1,18 +1,18 @@
 //! The owner's side, on the Mac. It watches the vault, shows each request, and
-//! on a yes connects `age -d` straight to `age -r`: the plaintext crosses one
-//! OS pipe between two age processes and never enters this one.
+//! on a yes opens the ciphertext and seals it to the caller's one-time key, here
+//! in this process: the plaintext crosses one zeroizing buffer and goes no further.
 
 use anyhow::{bail, Context};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use plexus_client::ClientEvent;
-use hyperforge_vault::client::{fingerprint, read_credential, Rpc};
-use hyperforge_vault::manifest;
+use hyperforge_vault::client::{fingerprint, no_core_dumps, read_credential, Rpc};
+use hyperforge_vault::{keys, manifest};
 use hyperforge_vault::wire::*;
 use serde_json::json;
 use std::collections::HashSet;
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -20,26 +20,46 @@ use std::time::{Duration, UNIX_EPOCH};
 const DECRYPT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Parser, Debug)]
-#[command(name = "vault-approve", about = "Approve or deny vault requests; a yes decrypts through age, so Touch ID fires")]
+#[command(name = "vault-approve", about = "Approve or deny vault requests; a yes decrypts here, with the identity", subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 struct Args {
-    /// The age identity: on the Mac, the age-plugin-se identity file.
-    #[arg(long, env = "VAULT_IDENTITY")]
-    identity: PathBuf,
+    #[command(subcommand)]
+    command: Option<Tool>,
+    /// The age identity file. Read at each decrypt, and held no longer.
+    #[arg(long, env = "VAULT_IDENTITY", required = true)]
+    identity: Option<PathBuf>,
     #[arg(long, env = "VAULT_URL", default_value = "ws://127.0.0.1:4470")]
     server: String,
-    /// The age binary. age-plugin-se must be on PATH for it.
-    #[arg(long, env = "VAULT_AGE", default_value = "age")]
-    age: PathBuf,
     /// The name-to-hash manifest vault-encrypt writes. A ciphertext it does
     /// not match is never decrypted.
-    #[arg(long, env = "VAULT_MANIFEST")]
-    manifest: PathBuf,
+    #[arg(long, env = "VAULT_MANIFEST", required = true)]
+    manifest: Option<PathBuf>,
     /// A file holding the owner's credential.
-    #[arg(long, env = "VAULT_OWNER_CREDENTIAL_FILE")]
-    owner_credential_file: PathBuf,
+    #[arg(long, env = "VAULT_OWNER_CREDENTIAL_FILE", required = true)]
+    owner_credential_file: Option<PathBuf>,
     /// Handle one pending request, waiting for one if need be, and exit: zero
     /// if it was approved or denied, otherwise non-zero. No reconnecting.
     #[arg(long)]
+    once: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Tool {
+    /// Write a new recovery identity to a new file, and print its public
+    /// recipient. The secret goes to the file and nowhere else.
+    RecoveryKeygen {
+        /// Where to write it. Refused if something is there.
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
+/// What watching needs: [`Args`], with the requirements clap checked.
+#[derive(Debug)]
+struct Watch {
+    identity: PathBuf,
+    server: String,
+    manifest: PathBuf,
+    owner_credential_file: PathBuf,
     once: bool,
 }
 
@@ -108,56 +128,8 @@ fn ask() -> anyhow::Result<Option<bool>> {
     Ok(Some(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")))
 }
 
-/// `age -d -i identity | age -a -r key`, ciphertext on the first's stdin. The
-/// value exists only in that pipe; what comes back is sealed to `key`.
-async fn reseal(age: &Path, identity: &Path, ciphertext: String, key: &str) -> anyhow::Result<String> {
-    // Checked again here: the server is not trusted to have checked, and this
-    // string is about to be an argument.
-    if !valid_one_time_pubkey(key) {
-        bail!("the one-time key is not an X25519 age recipient");
-    }
-    let mut decrypt = tokio::process::Command::new(age)
-        .arg("-d")
-        .arg("-i")
-        .arg(identity)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("running {}", age.display()))?;
-    let pipe: Stdio = decrypt.stdout.take().context("no stdout")?.try_into().context("the pipe")?;
-    let seal = tokio::process::Command::new(age)
-        .arg("-a")
-        .arg("-r")
-        .arg(key)
-        .stdin(pipe)
-        .stdout(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("running {}", age.display()))?;
-    let mut stdin = decrypt.stdin.take().context("no stdin")?;
-    tokio::spawn(async move {
-        use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(ciphertext.as_bytes()).await;
-    });
-    let both = async {
-        let (decrypted, sealed) = tokio::join!(decrypt.wait(), seal.wait_with_output());
-        anyhow::Ok((decrypted?, sealed?))
-    };
-    let (decrypted, sealed) = tokio::time::timeout(DECRYPT_TIMEOUT, both).await.context("age took too long")??;
-    // A failed decrypt still leaves `age -r` a valid seal of nothing, so the
-    // first exit status is the one that matters.
-    if !decrypted.success() {
-        bail!("age -d failed: {decrypted}");
-    }
-    if !sealed.status.success() {
-        bail!("age -r failed: {}", sealed.status);
-    }
-    Ok(String::from_utf8(sealed.stdout).context("age's armored output is not text")?)
-}
-
 /// Shows one request and acts on the answer.
-async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Result<Outcome> {
+async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Result<Outcome> {
     let secret = printable(&request.secret, 64);
     let purpose = printable(&request.purpose, MAX_PURPOSE);
     let caller = printable(&request.caller, MAX_CALLER);
@@ -195,7 +167,9 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
         println!("denied");
         return Ok(Outcome::Refused);
     }
-    match reseal(&args.age, &args.identity, ciphertext, &request.one_time_pubkey).await {
+    let (identity, key) = (args.identity.clone(), request.one_time_pubkey.clone());
+    let sealed = keys::with_deadline(DECRYPT_TIMEOUT, move || keys::reseal(&identity, keys::FORMATS, &ciphertext, &key)).await;
+    match sealed {
         Ok(sealed) => {
             rpc.call("fulfill", json!({"id": request.id, "sealed": sealed})).await?;
             println!("approved and sealed");
@@ -213,7 +187,7 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
 }
 
 /// One connection's life. `Ok`: stop. `Err`: reconnect, or under `--once`, exit.
-async fn session(args: &Args, credential: &str, seen: &mut HashSet<String>) -> anyhow::Result<()> {
+async fn session(args: &Watch, credential: &str, seen: &mut HashSet<String>) -> anyhow::Result<()> {
     let rpc = Rpc::connect_as_owner(&args.server, credential).await?;
     println!("watching {}", args.server);
     let mut events = rpc.stream("watch", json!({}));
@@ -244,7 +218,18 @@ async fn session(args: &Args, credential: &str, seen: &mut HashSet<String>) -> a
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    no_core_dumps();
     let args = Args::parse();
+    if let Some(Tool::RecoveryKeygen { out }) = &args.command {
+        let recipient = keys::generate_recovery_identity(out)?;
+        eprintln!("wrote the recovery identity to {}; its public recipient follows", out.display());
+        println!("{recipient}");
+        return Ok(());
+    }
+    let (Some(identity), Some(manifest), Some(owner_credential_file)) = (args.identity, args.manifest, args.owner_credential_file) else {
+        bail!("--identity, --manifest and --owner-credential-file are required");
+    };
+    let args = Watch { identity, server: args.server, manifest, owner_credential_file, once: args.once };
     if !args.identity.exists() {
         bail!("no identity at {}", args.identity.display());
     }

@@ -5,33 +5,40 @@ and each secret. Commands below are the procedure, to be run by the owner on
 their own machines. Nothing here has been run for real yet: the end-to-end suite
 covers this flow with a software age identity standing in for the Secure Enclave.
 
+Every step uses this crate's binaries. There is no `age` CLI to install.
+
+**Do not enrol a real secret yet.** Step 1 is pending, and the steps after it name
+its recipient.
+
 ## 1. The owner's key, on the Mac
 
-Needs `age` and `age-plugin-se` on `PATH`.
+**Pending the Secure Enclave spike.** The vault no longer runs `age` or any
+plugin, so an enclave key needs a `KeyFormat` in `src/keys.rs`, and that is not
+written. Until it is, `vault-encrypt` refuses an `age1se1…` line and `vault-approve`
+refuses an `AGE-PLUGIN-SE-1…` identity, each naming the line, and nothing is
+encrypted or decrypted. This step will be written from the spike's result.
 
-```sh
-mkdir -p ~/.config/vault && chmod 700 ~/.config/vault
-age-plugin-se keygen --access-control=current-biometry -o ~/.config/vault/owner.identity
-```
-
-It prints the recipient, `age1se1…`. The identity file is only a handle: the key
-cannot leave the Secure Enclave, and a decrypt fires Touch ID.
+The intent stands: a key that cannot leave the Secure Enclave, whose decrypt fires
+Touch ID, created with `current-biometry` access control.
 
 ## 2. The recovery key, offline
 
 ```sh
-age-keygen -o recovery.key
+vault-approve recovery-keygen --out recovery.key
 ```
 
-It prints the recipient, `age1…`. Put `recovery.key` on paper or an offline drive,
-then remove it from this machine. Without it, a lost Mac loses every secret.
+It prints the recipient, `age1…`, and nothing else: the secret goes only to the
+file, which is created owner-only and never over an existing one. Put `recovery.key`
+on paper or an offline drive, then remove it from this machine. Without it, a lost
+Mac loses every secret.
 
 ## 3. The recipients file, on the Mac
 
-Both recipients, one per line. `~/.config/vault/recipients.txt`:
+One recipient per line, as many as you want. A line `vault-encrypt` cannot read
+refuses the whole file. `~/.config/vault/recipients.txt`:
 
 ```
-# owner, Secure Enclave
+# owner, Secure Enclave: pending, see step 1
 age1se1...
 # recovery, offline
 age1...
@@ -62,8 +69,8 @@ be answered.
 
 ## 5. Each secret
 
-From the Mac, with the value on stdin. `age` reads stdin itself, so the plaintext
-never passes through `vault-encrypt`:
+From the Mac, with the value on stdin. `vault-encrypt` encrypts it in its own
+process, through one zeroized buffer, and writes it nowhere:
 
 ```sh
 export VAULT_URL=ws://<address>:4470
@@ -100,12 +107,15 @@ With a throwaway secret, never a real one. On any caller:
 vault-run enrol-check --purpose "enrolment check" --env CHECK -- sh -c 'test -n "$CHECK" && echo ok'
 ```
 
-The approver shows the request, Touch ID fires on `y`, and the command prints
+The approver shows the request, Touch ID fires on `y` (once step 1 exists), and the command prints
 `ok`. Answering `n` makes `vault-run` exit with `the owner denied the request`.
 
 ## Recovery
 
-On a machine with the offline key, copy `secrets/<name>.age` from the server:
+On a machine with the offline key, copy `secrets/<name>.age` from the server. The
+file is plain age format and the key is an age identity, so any age implementation
+opens it. The vault has no command for this, so this one step does need the `age`
+CLI, on that machine, for that day:
 
 ```sh
 age -d -i recovery.key < <name>.age

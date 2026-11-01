@@ -1584,6 +1584,7 @@ name = "hyperforge-vault"
 version = "0.1.0"
 dependencies = [
  "age",
+ "age-core",
  "anyhow",
  "async-stream",
  "async-trait",

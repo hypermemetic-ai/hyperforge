@@ -1,5 +1,6 @@
-//! End to end: the real binaries over loopback and the real age CLI. A plain
-//! software age identity stands in for the Secure Enclave key. Every test has
+//! End to end: the real binaries over loopback. No age CLI: an `age` on the
+//! tools' PATH records that it ran, and [`World::assert_no_age_ran`] fails on
+//! it. A plain software age identity stands in for the Secure Enclave key. Every test has
 //! a private HOME, a clean environment and its own state directory, and every
 //! process is stopped by its own handle.
 
@@ -12,10 +13,10 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const REAL_AGE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.tools/age");
 const VAULT: &str = env!("CARGO_BIN_EXE_hyperforge-vault");
 const APPROVE: &str = env!("CARGO_BIN_EXE_vault-approve");
 const RUN: &str = env!("CARGO_BIN_EXE_vault-run");
@@ -62,16 +63,15 @@ struct World {
 
 impl World {
     fn new() -> World {
-        assert!(Path::new(REAL_AGE_DIR).join("age").exists(), "run scripts/fetch-age.sh: the tests need the real age CLI");
         let tmp = tempfile::Builder::new().prefix("vault-e2e").tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
         let root = tmp.path().to_path_buf();
         let (home, state, logs, bin) = (root.join("home"), root.join("state"), root.join("logs"), root.join("bin"));
         for d in [&home, &logs, &bin] {
             fs::create_dir_all(d).unwrap();
         }
-        // `age` on PATH logs its argv (so a test can read every argument the
-        // tools ever passed it) and execs the real one.
-        write_script(&bin.join("age"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/age-argv.log'\nexec '{REAL_AGE_DIR}/age' \"$@\"\n", logs.display()));
+        // `age` on PATH logs that it ran, argv and all, and fails. Nothing may
+        // run it: a tool that did would both fail here and leave this file.
+        write_script(&bin.join("age"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/age-argv.log'\nexit 1\n", logs.display()));
         // `osascript` records its argv, one argument a line, and does nothing.
         write_script(&bin.join("osascript"), &format!("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> '{}/osascript-argv.log'\n", logs.display()));
         let owner = root.join("owner.key");
@@ -79,10 +79,7 @@ impl World {
         let recipients = root.join("recipients.txt");
         let mut lines = String::new();
         for key in [&owner, &recovery] {
-            let out = Command::new(format!("{REAL_AGE_DIR}/age-keygen")).arg("-o").arg(key).output().unwrap();
-            assert!(out.status.success());
-            let text = String::from_utf8(out.stderr).unwrap();
-            lines.push_str(text.trim().strip_prefix("Public key: ").unwrap());
+            lines.push_str(&keygen(key));
             lines.push('\n');
         }
         fs::write(&recipients, lines).unwrap();
@@ -202,9 +199,18 @@ impl World {
 
     /// `vault-approve --once`.
     fn approver_once(&self) -> Approver {
+        self.approver_once_with(&self.owner)
+    }
+
+    fn approver_once_with(&self, identity: &Path) -> Approver {
         let mut command = self.command(APPROVE);
         command.env_remove("PLEXUS_WS_TRACE").arg("--once");
-        self.approver_from(command, &self.owner)
+        self.approver_from(command, identity)
+    }
+
+    /// The owner's key behind a FIFO: see [`KeyWitness`].
+    fn watched_owner(&self) -> KeyWitness {
+        KeyWitness::new(&self.root.join("watched.key"), fs::read(&self.owner).unwrap())
     }
 
     fn approver_from(&self, mut command: Command, identity: &Path) -> Approver {
@@ -287,6 +293,67 @@ impl World {
     fn assert_no_leak_anywhere(&self) {
         let hits = self.leaks(&[&self.state, &self.logs, &self.home]);
         assert!(hits.is_empty(), "canary found: {hits:?}");
+    }
+
+    /// The PATH trap never fired: no tool spawned `age`.
+    fn assert_no_age_ran(&self) {
+        let log = self.logs.join("age-argv.log");
+        assert!(!log.exists(), "something ran age: {}", fs::read_to_string(&log).unwrap_or_default());
+    }
+}
+
+/// A new identity at `path`, from our own binary; its public recipient.
+fn keygen(path: &Path) -> String {
+    let out = Command::new(APPROVE).env_clear().arg("recovery-keygen").arg("--out").arg(path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// Whether the approver ever read its identity, from outside it. The key is
+/// behind a FIFO, so the kernel says when someone opened it: a process that
+/// never opened the key has decrypted nothing, because it is read at each
+/// decrypt and never held. This is what replaces reading `age -d` off an argv.
+struct KeyWitness {
+    path: PathBuf,
+    reads: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+}
+
+impl KeyWitness {
+    fn new(path: &Path, key: Vec<u8>) -> KeyWitness {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `name` outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (reads, stop) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+        let (counter, stopped, fifo) = (reads.clone(), stop.clone(), path.to_path_buf());
+        std::thread::spawn(move || {
+            while !stopped.load(Ordering::SeqCst) {
+                // Non-blocking, a FIFO opens for write only if a reader is there.
+                match fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&fifo) {
+                    Ok(mut f) => {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        f.write_all(&key).unwrap();
+                        drop(f);
+                        // The reader's gone by the next look.
+                        std::thread::sleep(Duration::from_millis(300));
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        KeyWitness { path: path.to_path_buf(), reads, stop }
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for KeyWitness {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
     }
 }
 
@@ -486,16 +553,20 @@ fn open(id: &age::x25519::Identity, sealed: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// A sealed blob for `public`, made with the real CLI.
+/// What `age -d -i key` would say: read by the crate's own identity-file parser,
+/// which is not the one under test. tests/interop.rs does this with a real CLI.
+fn open_with_key_file(key: &Path, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    let identities = age::IdentityFile::from_file(key.display().to_string()).map_err(|e| e.to_string())?.into_identities().map_err(|e| e.to_string())?;
+    let d = age::Decryptor::new_buffered(age::armor::ArmoredReader::new(ciphertext)).map_err(|e| e.to_string())?;
+    let mut r = d.decrypt(identities.iter().map(|i| i.as_ref() as &dyn age::Identity)).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    r.read_to_end(&mut out).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// A sealed blob for `public`.
 fn seal_for(public: &str, plaintext: &[u8]) -> String {
-    let mut child = Command::new(format!("{REAL_AGE_DIR}/age"))
-        .args(["-a", "-r", public])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(plaintext).unwrap();
-    String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
+    age::encrypt_and_armor(&public.parse::<age::x25519::Recipient>().unwrap(), plaintext).unwrap()
 }
 
 // ---- the cases ---------------------------------------------------------
@@ -505,7 +576,8 @@ fn happy_path_end_to_end() {
     let w = World::new();
     let _server = w.server();
     assert!(w.encrypt("db-password").status.success());
-    let mut approver = w.approver();
+    let witness = w.watched_owner();
+    let mut approver = w.approver_with(&witness.path);
     let out = w.root.join("hash");
     let mut caller = w.run_cmd("db-password", "nightly backup", &w.hash_script(&out));
     approver.answer("y");
@@ -521,10 +593,10 @@ fn happy_path_end_to_end() {
     assert!(shown.contains("time"), "approver must show the time: {shown}");
     let notified = fs::read_to_string(w.logs.join("osascript-argv.log")).unwrap();
     assert!(notified.contains("db-password"), "{notified}");
-    // Decrypted with the identity, resealed to the one-time key, through age.
-    let argv = fs::read_to_string(w.logs.join("age-argv.log")).unwrap();
-    assert!(argv.contains(&format!("-d -i {}", w.owner.display())), "{argv}");
-    assert!(argv.contains("-r age1"), "{argv}");
+    // Decrypted with the identity, once, resealed to the one-time key (the
+    // caller opened it, above, with that key), and without age.
+    assert_eq!(witness.reads(), 1);
+    w.assert_no_age_ran();
     w.assert_no_leak_anywhere();
 }
 
@@ -556,15 +628,16 @@ fn denied_request_gives_nothing() {
     let w = World::new();
     let _server = w.server();
     assert!(w.encrypt("s").status.success());
-    let mut approver = w.approver();
+    let witness = w.watched_owner();
+    let mut approver = w.approver_with(&witness.path);
     let out = w.root.join("hash");
     let mut caller = w.run_cmd("s", "please", &w.hash_script(&out));
     approver.answer("n");
     assert!(!caller.wait().success());
     assert!(!out.exists());
     assert!(w.audit_events().iter().any(|e| e == "deny"));
-    // Denying never ran age at all.
-    assert!(!fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default().contains("-d "));
+    // Denying never touched the key at all.
+    assert_eq!(witness.reads(), 0);
 }
 
 #[test]
@@ -726,12 +799,7 @@ fn a_wrong_one_time_key_cannot_open_a_result() {
     assert_eq!(open(&right, sealed).unwrap(), w.value);
     // Nor do the owner's or recovery keys: the seal is to the one-time key alone.
     for key in [&w.owner, &w.recovery] {
-        let mut child = Command::new(format!("{REAL_AGE_DIR}/age"))
-            .arg("-d").arg("-i").arg(key)
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().unwrap();
-        child.stdin.take().unwrap().write_all(sealed.as_bytes()).unwrap();
-        assert!(!child.wait_with_output().unwrap().status.success());
+        assert!(open_with_key_file(key, sealed.as_bytes()).is_err());
     }
 }
 
@@ -820,9 +888,8 @@ fn vault_run_keeps_the_value_off_argv_and_out_of_logs() {
     assert!(contains(&environ, b"MY_SECRET="));
     assert!(caller.wait().success());
 
-    // Every argv age ever had, and every log.
-    let argv = fs::read(w.logs.join("age-argv.log")).unwrap();
-    assert!(!contains(&argv, needle));
+    // No age had an argv, and every log.
+    w.assert_no_age_ran();
     w.assert_no_leak_anywhere();
 }
 
@@ -833,16 +900,14 @@ fn recovery_with_the_offline_key_decrypts_a_stored_file() {
     assert!(w.encrypt("s").status.success());
     drop(server);
     let file = w.secret_file("s");
-    let out = Command::new(format!("{REAL_AGE_DIR}/age")).arg("-d").arg("-i").arg(&w.recovery).arg(&file).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(out.stdout, w.value);
+    let ciphertext = fs::read(&file).unwrap();
+    assert_eq!(open_with_key_file(&w.recovery, &ciphertext).unwrap(), w.value);
     // And the stranger's key does not.
     let (stranger, _) = new_key();
     let key = w.root.join("stranger.key");
     use age::secrecy::ExposeSecret;
     fs::write(&key, stranger.to_string().expose_secret()).unwrap();
-    let out = Command::new(format!("{REAL_AGE_DIR}/age")).arg("-d").arg("-i").arg(&key).arg(&file).output().unwrap();
-    assert!(!out.status.success());
+    assert!(open_with_key_file(&key, &ciphertext).is_err());
 }
 
 #[test]
@@ -959,7 +1024,7 @@ fn a_failed_decrypt_is_a_denial_not_an_empty_value() {
     let _server = w.server();
     assert!(w.encrypt("s").status.success());
     let wrong = w.root.join("wrong.key");
-    assert!(Command::new(format!("{REAL_AGE_DIR}/age-keygen")).arg("-o").arg(&wrong).output().unwrap().status.success());
+    keygen(&wrong);
     let mut approver = w.approver_with(&wrong);
     let out = w.root.join("hash");
     let mut caller = w.run_cmd("s", "touch id cancelled", &w.hash_script(&out));
@@ -1036,18 +1101,17 @@ fn a_swapped_ciphertext_is_refused_with_nothing_decrypted() {
     fs::copy(w.secret_file("b"), w.secret_file("a")).unwrap();
     // Control: what is served under `a` opens with the owner's key, so only a
     // check before the decrypt can stop this.
-    let control = Command::new(format!("{REAL_AGE_DIR}/age")).arg("-d").arg("-i").arg(&w.owner).arg(w.secret_file("a")).output().unwrap();
-    assert_eq!(control.stdout, b"the other secret\n");
+    assert_eq!(open_with_key_file(&w.owner, &fs::read(w.secret_file("a")).unwrap()).unwrap(), b"the other secret\n");
 
-    let mut approver = w.approver();
+    let witness = w.watched_owner();
+    let mut approver = w.approver_with(&witness.path);
     let out = w.root.join("hash");
     let mut caller = w.run_cmd("a", "swap", &w.hash_script(&out));
     approver.answer("y");
     let status = caller.wait();
     assert!(!out.exists(), "the attack worked: the caller received b under the name a");
     assert!(!status.success());
-    let argv = fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default();
-    assert!(!argv.contains("-d "), "age decrypted a ciphertext the manifest does not know: {argv}");
+    assert_eq!(witness.reads(), 0, "the key was read for a ciphertext the manifest does not know");
     let events = w.audit_events();
     assert!(!events.iter().any(|e| e == "fulfill"), "{events:?}");
     assert!(approver.text().contains("manifest"), "the refusal must say why: {}", approver.text());
@@ -1063,11 +1127,11 @@ fn a_secret_outside_the_manifest_is_refused_with_nothing_decrypted() {
     let stored = seal_for(recipients.lines().next().unwrap(), b"stored by someone else\n");
     assert_eq!(rpc1(&w, "put", json!({"name": "stranger", "ciphertext": stored}))["type"], "stored");
     request_raw(&w, "stranger", "unknown", &public);
-    let mut approver = w.approver();
+    let witness = w.watched_owner();
+    let mut approver = w.approver_with(&witness.path);
     approver.answer("y");
     wait_until("the refusal", SHELL_WAIT, || w.audit_events().iter().any(|e| e == "deny" || e == "fulfill"));
-    let argv = fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default();
-    assert!(!argv.contains("-d "), "{argv}");
+    assert_eq!(witness.reads(), 0);
     assert!(!w.audit_events().iter().any(|e| e == "fulfill"));
 }
 
@@ -1226,12 +1290,13 @@ fn once_takes_a_no_and_exits() {
     assert!(w.encrypt("s").status.success());
     let (_, public) = new_key();
     let id = request_raw(&w, "s", "no thanks", &public);
-    let mut approver = w.approver_once();
+    let witness = w.watched_owner();
+    let mut approver = w.approver_once_with(&witness.path);
     approver.answer("n");
     let status = approver.exit();
     assert!(status.success(), "{status}: {}", approver.text());
     assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "denied");
-    assert!(!fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default().contains("-d "));
+    assert_eq!(witness.reads(), 0);
 }
 
 /// `--once` has the same manners as the long-running approver, and tells its
@@ -1245,11 +1310,12 @@ fn once_refuses_a_swap_and_exits_nonzero() {
     fs::copy(w.secret_file("b"), w.secret_file("a")).unwrap();
     let (_, public) = new_key();
     request_raw(&w, "a", "swap", &public);
-    let mut approver = w.approver_once();
+    let witness = w.watched_owner();
+    let mut approver = w.approver_once_with(&witness.path);
     approver.answer("y");
     let status = approver.exit();
     assert!(!status.success(), "{}", approver.text());
-    assert!(!fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default().contains("-d "));
+    assert_eq!(witness.reads(), 0);
 }
 
 #[test]
@@ -1311,4 +1377,98 @@ sys.exit(0 if answered else 3)
     let events = w.audit_events();
     assert!(!events.iter().any(|e| e == "fulfill"), "a key typed ahead answered the prompt: {events:?}\n{shown}");
     assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "denied");
+}
+
+// ---- HYPE-22: age in process, keys from our own binary -------------------
+
+/// The other half of the witness: a key read for each yes and at no other
+/// time, so a held key cannot be what answers the second request.
+#[test]
+fn the_identity_is_read_at_each_decrypt_and_not_before() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let witness = w.watched_owner();
+    let mut approver = w.approver_with(&witness.path);
+    let mut first = w.run_cmd("s", "first", "true");
+    wait_until("a prompt", SHELL_WAIT, || approver.text().contains(PROMPT));
+    assert_eq!(witness.reads(), 0, "the key was read before the owner said yes");
+    approver.answer("y");
+    assert!(first.wait().success());
+    assert_eq!(witness.reads(), 1);
+    // Past the witness's pause, so a second read is seen as one.
+    std::thread::sleep(Duration::from_millis(400));
+    let mut second = w.run_cmd("s", "second", "true");
+    approver.answer("y");
+    assert!(second.wait().success());
+    assert_eq!(witness.reads(), 2);
+    w.assert_no_age_ran();
+}
+
+/// As many recipients as the file names, each able to open what is stored.
+#[test]
+fn any_number_of_recipients_can_open_a_stored_secret() {
+    let w = World::new();
+    let _server = w.server();
+    let keys: Vec<PathBuf> = (0..4).map(|i| w.root.join(format!("extra{i}.key"))).collect();
+    let mut list = fs::read_to_string(&w.recipients).unwrap();
+    for key in &keys {
+        list.push_str(&format!("# another\n{}\n", keygen(key)));
+    }
+    fs::write(&w.recipients, list).unwrap();
+    assert!(w.encrypt("s").status.success());
+    let ciphertext = fs::read(w.secret_file("s")).unwrap();
+    for key in keys.iter().chain([&w.owner, &w.recovery]) {
+        assert_eq!(open_with_key_file(key, &ciphertext).unwrap(), w.value);
+    }
+    w.assert_no_age_ran();
+}
+
+/// A recipient the build cannot use must not be dropped: that secret would be
+/// stored without the key its owner listed. Nothing is stored, nothing recorded.
+#[test]
+fn a_recipient_this_build_cannot_use_stores_nothing() {
+    let w = World::new();
+    let _server = w.server();
+    let mut list = fs::read_to_string(&w.recipients).unwrap();
+    list.push_str("age1se1qgg72x2qfk9wg3wh0qg9u0v7l5dkq4jx69fv80p6wdus4nkr3r3vkwnc\n");
+    fs::write(&w.recipients, list).unwrap();
+    let out = w.encrypt("s");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("line 3"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!w.secret_file("s").exists());
+    assert!(!w.manifest.exists());
+    assert!(rpc(&w.url(), "list", json!({})).unwrap().is_empty());
+}
+
+#[test]
+fn recovery_keygen_prints_nothing_secret() {
+    let w = World::new();
+    let key = w.root.join("new-recovery.key");
+    // With the approver's environment set: its requirements do not apply here.
+    let out = w.command(APPROVE).arg("recovery-keygen").arg("--out").arg(&key).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout.clone()).unwrap();
+    let printed = stdout.trim();
+    assert!(printed.starts_with("age1") && printed.parse::<age::x25519::Recipient>().is_ok(), "{printed}");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+    let text = fs::read_to_string(&key).unwrap();
+    let secret = text.lines().find(|l| l.starts_with("AGE-SECRET-KEY-1")).unwrap();
+    for output in [&out.stdout, &out.stderr] {
+        assert!(!contains(output, b"AGE-SECRET-KEY"), "{}", String::from_utf8_lossy(output));
+        assert!(!contains(output, secret.as_bytes()));
+    }
+    // What it wrote opens what its printed recipient sealed.
+    assert_eq!(open_with_key_file(&key, seal_for(printed, b"it fits").as_bytes()).unwrap(), b"it fits");
+}
+
+#[test]
+fn recovery_keygen_never_overwrites_a_key() {
+    let w = World::new();
+    let before = fs::read(&w.recovery).unwrap();
+    let out = w.command(APPROVE).arg("recovery-keygen").arg("--out").arg(&w.recovery).output().unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty(), "printed a recipient for no key");
+    assert_eq!(fs::read(&w.recovery).unwrap(), before);
 }

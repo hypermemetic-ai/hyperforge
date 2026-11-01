@@ -42,6 +42,10 @@ path = "tests/e2e.rs"
 required-features = ["server"]
 
 [[test]]
+name = "interop"
+path = "tests/interop.rs"
+
+[[test]]
 name = "owner_seam"
 path = "tests/owner_seam.rs"
 required-features = ["server"]
@@ -95,5 +99,7 @@ tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
 
 [dev-dependencies]
+# The types in the age traits, for keys.rs's stand-in format.
+age-core = "0.12"
 tempfile = "3"
 base64 = "0.22"

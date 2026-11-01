@@ -122,8 +122,8 @@ pub fn is_age_format(text: &str) -> bool {
     age::Decryptor::new_buffered(age::armor::ArmoredReader::new(text.as_bytes())).is_ok()
 }
 
-/// An X25519 age recipient. Everything else is refused: this string becomes an
-/// argument of `age` on the owner's Mac, and it comes from the network.
+/// An X25519 age recipient. Everything else is refused: the owner seals to this
+/// string, and it comes from the network.
 pub fn valid_one_time_pubkey(key: &str) -> bool {
     key.starts_with("age1") && key.parse::<age::x25519::Recipient>().is_ok()
 }
