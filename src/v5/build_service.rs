@@ -595,7 +595,7 @@ impl BuildService {
         include = "Packages to publish (globs on crate and Cabal package names; a Cabal package's repo name serves too); with closure, every chain package they need comes first",
         exclude = "Packages to leave out (globs)",
         closure = "Publish what the included packages need too, in dependency order (default true)",
-        execute = "Publish for real; without it every group's dry run runs and nothing is published (default false). Applies to a chain and to one Cabal repo; the other one-repo channels publish at once, as before"
+        execute = "Publish for real; without it every group's dry run runs and nothing is published (default false). Applies to a chain and to one repo on every channel"
     ))]
     #[allow(clippy::too_many_arguments)]
     pub async fn publish(
@@ -662,15 +662,37 @@ impl BuildService {
                 Ok(d) => d, Err(e) => { yield err("not_found", e); return; }
             };
             let ch = channel.unwrap_or_else(|| "crates.io".into());
+            let (secret_key, dry_run_cmd) = match ch.as_str() {
+                "crates.io" => ("cargo/token", "cargo publish --dry-run --allow-dirty"),
+                "npm" => ("npm/token", "npm publish --dry-run"),
+                "pypi" => ("pypi/token", "twine check dist/*"),
+                other => { yield err("unknown_channel", other); return; }
+            };
+            // HYPERFORGE-26: publishing takes --execute. Without it, the
+            // channel's dry run and nothing else; no token is read.
+            if !execute.unwrap_or(false) {
+                let out = match exec::run_shell_env(&dir, dry_run_cmd, &[]) {
+                    Ok(r) => r, Err(e) => { yield err(e.code(), e.to_string()); return; }
+                };
+                if out.exit_code == 0 {
+                    yield BuildEvent::PublishGroup {
+                        group: 1,
+                        repo: format!("{org}/{name}"),
+                        crates: vec![name],
+                        phase: "dry_run".into(),
+                        state: "ok".into(),
+                        step: dry_run_cmd.into(),
+                        log: String::new(),
+                        tail: None,
+                    };
+                } else {
+                    yield err("dry_run_failed", format!("exit {}: {}", out.exit_code, out.stderr));
+                }
+                return;
+            }
             // Resolve publishing token via SecretResolver.
             let resolver = crate::v5::secrets::YamlSecretStore::new(&config_dir);
             use crate::v5::secrets::SecretResolver as _;
-            let secret_key = match ch.as_str() {
-                "crates.io" => "cargo/token",
-                "npm" => "npm/token",
-                "pypi" => "pypi/token",
-                other => { yield err("unknown_channel", other); return; }
-            };
             let parsed = match crate::v5::secrets::SecretRef::parse(&format!("secrets://{secret_key}")) {
                 Ok(r) => r, Err(e) => { yield err(e.code(), e.to_string()); return; }
             };

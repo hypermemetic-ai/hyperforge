@@ -234,8 +234,7 @@ synapse -P 44104 lforge-v5 hyperforge build publish --org hypermemetic --name pl
   (deprecated ones too), refuses uncommitted changes, stops at the first
   failure and tags `<package>-v<version>`, as for cargo.
 - One repo: `--channel hackage`, or no channel on a repo with a `.cabal` file
-  and no Cargo.toml. This form honours `--execute`, unlike the other one-repo
-  channels, which publish at once.
+  and no Cargo.toml.
 - The token is `HACKAGE_TOKEN`, else `secrets://hackage/token`, else the
   `password-command` in `~/.cabal/config`, else cabal's own credentials. It
   reaches cabal in a 0600 `CABAL_CONFIG` file removed after the upload, never
@@ -250,9 +249,14 @@ synapse -P 44104 lforge-v5 hyperforge build publish --org hypermemetic --name pl
 `HYPERFORGE_CRATES_INDEX` / `HYPERFORGE_CRATES_DL` / `HYPERFORGE_HACKAGE_URL`
 point the registry reads elsewhere (a `file://` directory serves as a registry
 on disk; the tests use one). `HYPERFORGE_HACKAGE_URL` moves reads only, not an
-upload. The one-repo forms — `bump --org --name`, `publish --org --name
---channel` for crates.io, npm and pypi, `package_diff --from_ref --to_ref` —
-are unchanged.
+upload. The one-repo forms `bump --org --name` and `package_diff --from_ref
+--to_ref` are unchanged.
+
+`publish --org --name --channel` publishes only with `--execute true`, on every
+channel (HYPERFORGE-26; it used to publish at once). Without it, it runs the
+channel's dry run, reads no token and says `publish_group` with phase `dry_run`:
+`cargo publish --dry-run --allow-dirty`, `npm publish --dry-run`, or `twine
+check dist/*` (twine has no dry-run upload, so that checks what is in `dist/`).
 
 ## The deploy-driver contract (`driver/`)
 

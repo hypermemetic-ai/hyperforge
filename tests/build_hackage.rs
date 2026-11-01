@@ -49,10 +49,21 @@ esac
 const FAKE_CARGO: &str = r#"#!/bin/sh
 printf 'cargo %s\n' "$*" >> ../fake-tool.log
 printf 'cargo-token=%s\n' "${CARGO_REGISTRY_TOKEN:+set}" >> ../fake-tool.log
+if [ -e ../fail-cargo ]; then echo 'cargo refused by the fake' >&2; exit 1; fi
 for a in "$@"; do
   if [ "$prev" = "--config" ]; then cat "$a" >> ../fake-tool.log; fi
   prev="$a"
 done
+"#;
+
+const FAKE_NPM: &str = r#"#!/bin/sh
+printf 'npm %s\n' "$*" >> ../fake-tool.log
+printf 'npm-token=%s\n' "${NPM_TOKEN:+set}" >> ../fake-tool.log
+"#;
+
+const FAKE_TWINE: &str = r#"#!/bin/sh
+printf 'twine %s\n' "$*" >> ../fake-tool.log
+printf 'twine-token=%s\n' "${TWINE_PASSWORD:+set}" >> ../fake-tool.log
 "#;
 
 fn write(p: &Path, s: &str) {
@@ -95,7 +106,7 @@ fn env() {
     ONCE.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("hf26-env-{}", std::process::id()));
         let bin = root.join("bin");
-        for (name, body) in [("cabal", FAKE_CABAL), ("cargo", FAKE_CARGO)] {
+        for (name, body) in [("cabal", FAKE_CABAL), ("cargo", FAKE_CARGO), ("npm", FAKE_NPM), ("twine", FAKE_TWINE)] {
             write(&bin.join(name), body);
             let chmod = Command::new("chmod").arg("+x").arg(bin.join(name)).status().unwrap();
             assert!(chmod.success());
@@ -146,6 +157,7 @@ fn cabal_repo(ws: &Path, repo: &str, name: &str, version: &str, deps: &str) {
 struct Fx {
     ws: PathBuf,
     state: PathBuf,
+    config: PathBuf,
     service: HyperforgeService,
     _tmp: tempfile::TempDir,
 }
@@ -167,8 +179,8 @@ fn fixture(extra: impl FnOnce(&Path) -> Vec<&'static str>) -> Fx {
     );
     write(&config.join("secrets.yaml"), &format!("hackage/token: {TOKEN}\ncargo/token: cargo-fake\n"));
     let state = tmp.path().join("state");
-    let service = HyperforgeService::with_state_dir(config, &state);
-    Fx { ws, state, service, _tmp: tmp }
+    let service = HyperforgeService::with_state_dir(config.clone(), &state);
+    Fx { ws, state, config, service, _tmp: tmp }
 }
 
 impl Fx {
@@ -536,4 +548,66 @@ async fn bump_says_what_it_leaves_and_touches_no_cabal_file() {
     assert!(of_type(&ev, "chain_note").iter().any(|n| n["message"].as_str().unwrap().contains("hf26-proto")), "{ev:#?}");
     assert_eq!(git(&fx.ws.join("proto"), &["status", "--porcelain"]), "");
     assert_eq!(git(&fx.ws.join("proto"), &["rev-list", "--count", "HEAD"]).trim(), "1");
+}
+
+/// One repo, every channel: without `--execute` the channel's dry run and no
+/// token; with it the real command. (channel, dry argv, execute argv.)
+#[tokio::test]
+async fn one_repo_publish_only_dry_runs_without_execute() {
+    let cases = [
+        ("crates.io", "cargo publish --dry-run --allow-dirty", "cargo publish --allow-dirty", "cargo-token="),
+        ("npm", "npm publish --dry-run", "npm publish", "npm-token="),
+        ("pypi", "twine check dist/*", "twine upload dist/*", "twine-token="),
+    ];
+    for (channel, dry, real, token_line) in cases {
+        let fx = fixture(rust_repos);
+        for params in [
+            json!({"org": "o", "name": "rusty", "channel": channel}),
+            json!({"org": "o", "name": "rusty", "channel": channel, "execute": false}),
+        ] {
+            let ev = fx.call("build.publish", params).await;
+            assert!(of_type(&ev, "error").is_empty(), "{channel}: {ev:#?}");
+            assert!(of_type(&ev, "package_published").is_empty(), "{channel}: {ev:#?}");
+            let g = of_type(&ev, "publish_group");
+            assert_eq!(g.len(), 1, "{channel}: {ev:#?}");
+            assert_eq!(g[0]["phase"], "dry_run");
+            assert_eq!(g[0]["state"], "ok");
+            assert_eq!(g[0]["step"], dry);
+        }
+        let log = fx.tool_log();
+        let tool = dry.split(' ').next().unwrap();
+        assert_eq!(fx.tool_lines(&format!("{tool} ")), [dry, dry], "{log}");
+        assert_eq!(fx.tool_lines(token_line), [token_line, token_line], "no token in a dry run: {log}");
+
+        // Nobody's token is needed for a dry run; execute needs its own.
+        let ev = fx.call("build.publish", json!({"org": "o", "name": "rusty", "channel": channel, "execute": true})).await;
+        if channel == "crates.io" {
+            assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
+        } else {
+            assert_eq!(of_type(&ev, "error")[0]["code"], "missing_token", "{ev:#?}");
+            let secrets = fx.config.join("secrets.yaml");
+            write(&secrets, "cargo/token: f\nnpm/token: f\npypi/token: f\n");
+            let ev = fx.call("build.publish", json!({"org": "o", "name": "rusty", "channel": channel, "execute": true})).await;
+            assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
+            assert_eq!(of_type(&ev, "package_published").len(), 1, "{ev:#?}");
+        }
+        let lines = fx.tool_lines(&format!("{tool} "));
+        assert_eq!(lines.last().unwrap(), real, "{lines:?}");
+        assert_eq!(lines.iter().filter(|l| *l == real).count(), 1, "{lines:?}");
+        assert_eq!(fx.tool_lines(&format!("{token_line}set")).len(), 1, "{}", fx.tool_log());
+    }
+}
+
+#[tokio::test]
+async fn one_repo_cargo_is_the_default_and_a_failed_dry_run_says_so() {
+    let fx = fixture(rust_repos);
+    // No channel on a cargo repo: crates.io, still only a dry run.
+    let ev = fx.call("build.publish", json!({"org": "o", "name": "rusty"})).await;
+    assert_eq!(fx.tool_lines("cargo publish"), ["cargo publish --dry-run --allow-dirty"], "{ev:#?}");
+    write(&fx.ws.join("fail-cargo"), "");
+    let ev = fx.call("build.publish", json!({"org": "o", "name": "rusty"})).await;
+    let e = of_type(&ev, "error");
+    assert_eq!(e[0]["code"], "dry_run_failed", "{ev:#?}");
+    assert!(e[0]["message"].as_str().unwrap().contains("refused by the fake"), "{ev:#?}");
+    assert!(of_type(&ev, "package_published").is_empty());
 }
