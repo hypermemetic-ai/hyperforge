@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tier: mixed
+# tier: 1 (some slices need tier-2 credentials; they record and move on)
 # V5PARITY-13: checkpoint — verify v5 covers every v4 capability the
 # epic pinned. Tier-2 stories (U1/U5/U6) SKIP cleanly without
 # HF_V5_TEST_CONFIG_DIR; tier-1 stories run always.
@@ -124,7 +124,7 @@ if echo "$out" | hf_assert_event '.type == "package_manifest" and .name == "widg
 else
     record "U6a red: build.unify failed"
 fi
-out=$(hf_cmd build release --org demo --name widget --bump patch)
+out=$(hf_cmd build release --org demo --name widget --bump patch --execute true)
 if echo "$out" | hf_assert_event '.type == "release_created" and .tag == "v0.1.1"' >/dev/null 2>&1; then
     record "U6b green: build.release completes end-to-end (local)"
 else

@@ -52,8 +52,11 @@ fn parse_tier(script: &Path) -> Result<Tier, String> {
     for (idx, line) in rdr.lines().take(5).enumerate() {
         let line = line.map_err(|e| format!("read {}: {e}", script.display()))?;
         if let Some(rest) = line.trim_start().strip_prefix("# tier:") {
+            // A note may follow the number: `# tier: 1 (no forge)`.
             let n: u32 = rest
-                .trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
                 .parse()
                 .map_err(|e| format!(
                     "invalid tier value on line {} of {}: {e}",
