@@ -120,12 +120,14 @@ pub fn lock_failures() -> usize {
     FAILED.load(Ordering::Relaxed)
 }
 
-/// What [`lock_heap`] said, handled: the tool stops if it was told to, and if not
-/// the owner hears it either way. A value handled now may reach swap.
+/// What [`lock_heap`] said, handled. `require` stops the tool: `vault-approve` at
+/// its work and `vault-encrypt` always pass it, and `recover` only when told to,
+/// since a recovery on a bad day must still work. Otherwise the owner hears about
+/// it, as a value handled now may reach swap.
 pub fn require_or_warn(locked: Result<(), String>, require: bool) -> anyhow::Result<()> {
     if let Err(reason) = locked {
         if require {
-            bail!("memory is not locked and --require-memory-lock is set: {reason}");
+            bail!("memory is not locked, so this will not handle a value: {reason}. Raise the limit on locked memory (ulimit -l)");
         }
         eprintln!("warning: memory is NOT locked, so a value may reach swap: {reason}. --require-memory-lock makes this fatal");
     }

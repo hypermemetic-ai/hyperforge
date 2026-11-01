@@ -33,9 +33,9 @@ struct Args {
     /// The approver's manifest: this ciphertext's hash is recorded here.
     #[arg(long, env = "VAULT_MANIFEST")]
     manifest: PathBuf,
-    /// Stop, before reading a value, if memory cannot be locked out of swap.
-    #[arg(long)]
-    require_memory_lock: bool,
+    /// Accepted and redundant: memory that cannot be locked always stops this tool.
+    #[arg(long = "require-memory-lock", hide = true)]
+    _require_memory_lock: bool,
 }
 
 #[tokio::main]
@@ -43,7 +43,8 @@ async fn main() -> anyhow::Result<()> {
     platform::undumpable()?;
     let locked = platform::lock_heap();
     let args = Args::parse();
-    platform::require_or_warn(locked, args.require_memory_lock)?;
+    // No value is read on a heap that may reach swap.
+    platform::require_or_warn(locked, true)?;
     if !valid_secret_name(&args.name) {
         bail!("{:?} is not a secret name", args.name);
     }
@@ -59,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     // one is never zeroed.
     let mut stdin = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().context("stdin")?);
     let ciphertext = keys::encrypt(&recipients, &mut stdin)?;
-    platform::check_locks(args.require_memory_lock)?;
+    platform::check_locks(true)?;
     if !is_age_format(&ciphertext) {
         bail!("the output does not parse as age");
     }

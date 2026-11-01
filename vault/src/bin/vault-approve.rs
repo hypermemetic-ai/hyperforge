@@ -48,10 +48,10 @@ struct Args {
     /// if it was approved or denied, otherwise non-zero. No reconnecting.
     #[arg(long)]
     once: bool,
-    /// Stop, before any request, if memory cannot be locked out of swap, and
-    /// send no seal if a block fails to lock later.
-    #[arg(long)]
-    require_memory_lock: bool,
+    /// Accepted and redundant: watching stops at startup if memory cannot be
+    /// locked out of swap, and sends no seal if a block fails to lock later.
+    #[arg(long = "require-memory-lock", hide = true)]
+    _require_memory_lock: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -83,6 +83,7 @@ enum Tool {
         #[arg(long)]
         allow_terminal: bool,
         /// Stop, before opening anything, if memory cannot be locked out of swap.
+        /// Otherwise a warning: a recovery on a bad day must still work.
         #[arg(long)]
         require_memory_lock: bool,
     },
@@ -96,7 +97,6 @@ struct Watch {
     manifest: PathBuf,
     workos: WorkosArgs,
     once: bool,
-    require_memory_lock: bool,
 }
 
 /// How one request ended.
@@ -214,7 +214,7 @@ async fn handle(args: &Watch, login: &Login, request: &RequestSummary) -> anyhow
     }
     let (identity, key) = (args.identity.clone(), request.one_time_pubkey.clone());
     let sealed = keys::with_deadline(DECRYPT_TIMEOUT, move || keys::reseal(&identity, keys::FORMATS, &ciphertext, &key)).await;
-    let sealed = sealed.and_then(|sealed| platform::check_locks(args.require_memory_lock).map(|()| sealed));
+    let sealed = sealed.and_then(|sealed| platform::check_locks(true).map(|()| sealed));
     match sealed {
         Ok(sealed) => {
             owner_call(args, login, "fulfill", json!({"id": request.id, "sealed": sealed})).await?;
@@ -300,12 +300,13 @@ async fn main() -> anyhow::Result<()> {
             platform::require_or_warn(locked, *require_memory_lock)?;
             return recover(name, ciphertext, identity, manifest, *allow_terminal);
         }
-        None => platform::require_or_warn(locked, args.require_memory_lock)?,
+        // No request is answered on a heap that may reach swap.
+        None => platform::require_or_warn(locked, true)?,
     }
     let (Some(identity), Some(manifest)) = (args.identity, args.manifest) else {
         bail!("--identity and --manifest are required");
     };
-    let args = Watch { identity, server: args.server, manifest, workos: args.workos, once: args.once, require_memory_lock: args.require_memory_lock };
+    let args = Watch { identity, server: args.server, manifest, workos: args.workos, once: args.once };
     if !args.identity.exists() {
         bail!("no identity at {}", args.identity.display());
     }

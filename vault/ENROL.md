@@ -174,8 +174,8 @@ plaintext on disk. To feed a command, pipe it instead.
 - A ciphertext whose sha256 is not the manifest's entry for `<name>` is refused
   before the key is read, as is a name with no entry or a missing manifest.
 - A file cut short gives an error and no part of the value.
-- Memory that cannot be locked gives a warning; `--require-memory-lock` makes it
-  fatal. Prefer to run this somewhere with encrypted swap, or none.
+- Memory that cannot be locked gives a warning here, though it stops `vault-approve`
+  at its work and `vault-encrypt`; `--require-memory-lock` makes it fatal here too. Prefer to run this somewhere with encrypted swap, or none.
 
 Every ciphertext is plain age format, so any age tool still opens it with this key,
 if you have reason to skip the hash check. That is your call and not this command's.

@@ -213,9 +213,13 @@ off: `RLIMIT_CORE` is 0, and on Linux the process is also undumpable, since the
 limit does not bind a core piped to a handler such as systemd-coredump. That also
 closes `/proc/<pid>/mem` and ptrace to this user's other processes.
 
-If memory cannot be locked the tool says so on stderr and goes on. With
-`--require-memory-lock` it stops instead, before any value at startup, and sends no
-seal if a block fails to lock later. `mlockall` is not used: it does not exist on
+If memory cannot be locked, `vault-approve` and `vault-encrypt` stop: before any
+value at startup, and with no seal sent if a block fails to lock later. There is no
+switch to go on regardless, so the remedy is a higher `ulimit -l`.
+`--require-memory-lock` is still accepted on both and changes nothing. `vault-approve
+recover` is the exception: it says so on stderr and goes on, because a recovery on a
+bad day must still work, and there `--require-memory-lock` makes it stop.
+`recovery-keygen` also warns and goes on. `mlockall` is not used: it does not exist on
 macOS, and on Linux it can make a thread's stack fail to map under a low limit.
 
 Measured: the suite's canary is gone from both tools 300 ms after each of three
