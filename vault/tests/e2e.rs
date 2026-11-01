@@ -1774,12 +1774,25 @@ fn memory_that_cannot_be_locked_stops_the_owners_tools_by_default() {
     let out = child.wait_with_output().unwrap();
     assert!(!out.status.success(), "vault-encrypt went on");
     assert!(String::from_utf8_lossy(&out.stderr).contains("not locked"), "{}", String::from_utf8_lossy(&out.stderr));
+    // The warning is the later check speaking: this stopped at the start.
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("NOT locked"), "it read the value first: {}", String::from_utf8_lossy(&out.stderr));
     assert!(!w.secret_file("s").exists());
     assert!(!w.manifest.exists());
 
     let mut approver = w.command(APPROVE);
     set_memlock_limit_to_zero(&mut approver);
-    let out = approver.arg("--identity").arg(&w.owner).stdin(Stdio::null()).output().unwrap();
+    let mut child = approver.arg("--identity").arg(&w.owner).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // Bounded: an approver that went on would watch for ever.
+    let start = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > SHELL_WAIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("vault-approve went on");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().unwrap();
     assert!(!out.status.success(), "vault-approve went on");
     assert!(String::from_utf8_lossy(&out.stderr).contains("not locked"), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(!contains(&out.stdout, b"watching"), "it connected: {}", String::from_utf8_lossy(&out.stdout));
