@@ -144,6 +144,8 @@ async fn main() -> anyhow::Result<()> {
 
     let server = TransportServer::builder(lforge, rpc_converter)
         .with_websocket(args.port)
+        // HYPERFORGE-45: synapse reaches this daemon by port; no registry.
+        .without_registry()
         .build()
         .await?;
 
