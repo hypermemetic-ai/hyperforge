@@ -1,0 +1,91 @@
+[package]
+name = "hyperforge-vault"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "A secret vault whose server cannot read what it stores: every read is approved by the owner"
+
+[lib]
+name = "hyperforge_vault"
+path = "src/lib.rs"
+
+# HYPE-15. A member of the hyperforge workspace, as driver/ is. The service is
+# behind the default feature `server`; default-features = false is the
+# client-only build, which the daemon and the Mac depend on: the library's
+# client and wire modules and the client binaries, with no plexus-core,
+# plexus-macros or plexus-transport.
+[[bin]]
+name = "hyperforge-vault"
+path = "src/bin/hyperforge-vault.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "vault-approve"
+path = "src/bin/vault-approve.rs"
+
+[[bin]]
+name = "vault-run"
+path = "src/bin/vault-run.rs"
+
+[[bin]]
+name = "vault-get"
+path = "src/bin/vault-get.rs"
+
+[[bin]]
+name = "vault-encrypt"
+path = "src/bin/vault-encrypt.rs"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+required-features = ["server"]
+
+[features]
+default = ["server"]
+server = [
+    "dep:plexus-core",
+    "dep:plexus-macros",
+    "dep:plexus-transport",
+    "dep:jsonrpsee",
+    "dep:uuid",
+    "dep:async-stream",
+    "dep:async-trait",
+    "dep:schemars",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+]
+
+[dependencies]
+# The client half of plexus; `ws-native` is its WebSocket.
+plexus-client = { version = "0.6", features = ["ws-native"] }
+age = { version = "0.12", features = ["armor"] }
+zeroize = "1"
+libc = "0.2"
+humantime = "2"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+
+# The latest published plexus line, from crates.io. driver/ is on sibling paths
+# from before 0.6.1 was published, so the workspace holds both for now; move
+# these when the workspace moves to the next published line.
+plexus-core = { version = "0.6", optional = true }
+plexus-macros = { version = "0.6", optional = true }
+plexus-transport = { version = "0.5", default-features = false, optional = true }
+# The activation macro's expansion names these two directly.
+jsonrpsee = { version = "0.26", features = ["server", "macros"], optional = true }
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+async-stream = { version = "0.3", optional = true }
+async-trait = { version = "0.1", optional = true }
+schemars = { version = "1", features = ["derive"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+sha2 = "0.10"
+base64 = "0.22"
