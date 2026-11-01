@@ -93,8 +93,35 @@ impl<K: KeyAgreement> P256TagIdentity<K> {
 }
 
 impl<K: KeyAgreement> Identity for P256TagIdentity<K> {
-    fn unwrap_stanza(&self, _: &Stanza) -> Option<Result<FileKey, DecryptError>> {
-        None // red: not written yet
+    fn unwrap_stanza(&self, stanza: &Stanza) -> Option<Result<FileKey, DecryptError>> {
+        if stanza.tag != STANZA_TAG {
+            return None;
+        }
+        let bad = || Some(Err(DecryptError::InvalidHeader));
+        let [tag, enc] = &stanza.args[..] else { return bad() };
+        let (Ok(tag), Ok(enc)) = (BASE64_STANDARD_NO_PAD.decode(tag), BASE64_STANDARD_NO_PAD.decode(enc)) else { return bad() };
+        let (Ok(tag), Ok(enc)) = (<[u8; 4]>::try_from(tag), <[u8; 65]>::try_from(enc)) else { return bad() };
+        if stanza.body.len() != BODY_LENGTH {
+            return bad();
+        }
+        let pk = self.key.public_key();
+        let Some(expected) = stanza_tag(&enc, &pk) else { return Some(Err(DecryptError::DecryptionFailed)) };
+        // Before anything that can reach the key: a stanza for someone else must
+        // never fire Touch ID.
+        if expected != tag {
+            return None;
+        }
+        if PublicKey::from_sec1_bytes(&enc).is_err() {
+            return bad();
+        }
+        let Ok(z) = self.key.ecdh(&enc) else { return Some(Err(DecryptError::DecryptionFailed)) };
+        let (_shared, key, nonce) = hpke_schedule(&z, &enc, &pk, SALT);
+        let aead = ChaCha20Poly1305::new(Key::from_slice(&key[..]));
+        let Ok(plain) = aead.decrypt(Nonce::from_slice(&nonce[..]), Payload { msg: &stanza.body, aad: b"" }) else {
+            return Some(Err(DecryptError::DecryptionFailed));
+        };
+        let plain = Zeroizing::new(plain);
+        Some(Ok(FileKey::init_with_mut(|key| key.copy_from_slice(&plain))))
     }
 }
 

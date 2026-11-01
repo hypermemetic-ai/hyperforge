@@ -4,9 +4,15 @@
 //!     VAULT_AGE_CLI_DIR=/dir/holding/age PLEXUS_NO_REGISTRY=1 \
 //!       cargo test -p hyperforge-vault --test interop -- --ignored
 //!
-//! Throwaway keys only.
+//! Throwaway keys only. p256tag runs one way: the CLI encrypts, through its own
+//! `age-plugin-tag`, and only our side opens it, as the CLI's plugin decrypts with
+//! a hardware token and not with a key of ours.
 
-use hyperforge_vault::keys;
+#[path = "support/soft_enclave.rs"]
+mod soft_enclave;
+
+use hyperforge_vault::keys::{self, KeyFormat, SecureEnclave, X25519};
+use soft_enclave::SoftEnclave;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -128,4 +134,62 @@ fn a_reseal_of_cli_ciphertext_opens_with_the_cli() {
     // It may refuse on the header and close its stdin before this is all written.
     let _ = refused.stdin.as_ref().unwrap().write_all(sealed.as_bytes());
     assert!(!refused.wait_with_output().unwrap().status.success());
+}
+
+/// A key in the stand-in enclave, and what `keys.rs` reads it with.
+fn enclave(dir: &Path) -> (std::path::PathBuf, String, &'static SoftEnclave) {
+    let hardware = SoftEnclave::gated();
+    let identity = dir.join("owner.identity");
+    let recipient = keys::enrol(&identity, hardware).unwrap();
+    (identity, recipient, hardware)
+}
+
+/// Runs the CLI with its directory on PATH, for `age-plugin-tag`.
+fn age_with_plugins(args: &[&str], input: &[u8]) -> Vec<u8> {
+    let dir = cli("age").parent().unwrap().to_path_buf();
+    let mut child = Command::new(cli("age")).env("PATH", dir).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let input = input.to_vec();
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap().unwrap();
+    assert!(out.status.success(), "age {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    out.stdout
+}
+
+/// Pinned age writes the stanza; our core, and only it, opens it. Both forms.
+#[test]
+#[ignore = "needs VAULT_AGE_CLI_DIR"]
+fn a_p256tag_stanza_from_the_cli_opens_with_our_core() {
+    let dir = tempfile::tempdir().unwrap();
+    let (identity, recipient, hardware) = enclave(dir.path());
+    let formats: [Box<dyn KeyFormat>; 2] = [Box::new(X25519), Box::new(SecureEnclave(hardware))];
+    let formats: Vec<&dyn KeyFormat> = formats.iter().map(|f| f.as_ref()).collect();
+    for flags in [&["-a"][..], &[][..]] {
+        let mut args = flags.to_vec();
+        args.extend(["-r", &recipient]);
+        let ciphertext = age_with_plugins(&args, &value());
+        let identities = keys::load_identities(&identity, &formats).unwrap();
+        let reader = age::armor::ArmoredReader::new(&ciphertext[..]);
+        let decryptor = age::Decryptor::new_buffered(reader).unwrap();
+        let mut plain = decryptor.decrypt(identities.iter().map(|i| i.as_ref())).unwrap();
+        let mut out = Vec::new();
+        plain.read_to_end(&mut out).unwrap();
+        assert_eq!(out, value());
+    }
+    assert_eq!(hardware.prompts(), 2);
+}
+
+/// The CLI takes our recipient string, and our ciphertext with both keys in it
+/// opens through the CLI with the X25519 one: it read a header holding a p256tag
+/// stanza and did not choke.
+#[test]
+#[ignore = "needs VAULT_AGE_CLI_DIR"]
+fn the_cli_reads_a_header_holding_our_p256tag_stanza() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, recipient, _) = enclave(dir.path());
+    let (cli_key, cli_public) = theirs(dir.path(), "theirs.key");
+    let armored = encrypted_by_us(&value(), &format!("{recipient}\n{cli_public}\n"));
+    assert!(age::armor::ArmoredReader::new(armored.as_bytes()).bytes().filter_map(Result::ok).collect::<Vec<u8>>().windows(10).any(|w| w == b"-> p256tag"));
+    assert_eq!(age_with_plugins(&["-d", "-i", &cli_key], armored.as_bytes()), value());
 }

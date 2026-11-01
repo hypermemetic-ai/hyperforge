@@ -102,7 +102,7 @@ bech32 = "0.11"
 # What `src/p256tag.rs` needs of HPKE. `age` holds all of these already.
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
-p256 = "0.13"
+p256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
 sha2 = "0.10"
 zeroize = "1"
 libc = "0.2"
@@ -139,5 +139,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 tempfile = "3"
 jsonwebtoken = "9"
 # The software stand-in for the Secure Enclave: tests only, here and nowhere else.
-p256 = { version = "0.13", features = ["ecdh"] }
+p256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh"] }
 rand_core = { version = "0.6", features = ["getrandom"] }

@@ -1572,7 +1572,7 @@ fn an_enclave_recipient_encrypts_here_and_an_enclave_identity_is_refused_here() 
     let (_id, public) = new_key();
     let request = request_raw(&w, "s", "no enclave here", &public);
     approver.answer("y");
-    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("not sealed"));
+    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("denied"));
     assert!(approver.text().contains("no Secure Enclave") || approver.text().contains("refused"), "{}", approver.text());
     assert_eq!(rpc1(&w, "result", json!({"id": request}))["status"], "denied");
 }
@@ -1859,7 +1859,9 @@ fn a_block_that_fails_to_lock_later_sends_no_seal() {
     let (_id, public) = new_key();
     let request = request_raw(&w, "s", "too large to lock", &public);
     approver.answer("y");
-    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("not sealed"));
+    // "denied" and not "not sealed": the deny is sent between the two.
+    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("denied"));
+    assert!(approver.text().contains("not sealed"), "{}", approver.text());
     assert!(approver.text().contains("not locked"), "{}", approver.text());
     assert!(!approver.text().contains("approved and sealed"), "{}", approver.text());
     let answer = rpc1(&w, "result", json!({"id": request}));
@@ -1890,7 +1892,8 @@ fn a_failed_lock_refuses_that_request_and_not_the_next() {
     let (_id, public) = new_key();
     let refused = request_raw(&w, "large", "too large to lock", &public);
     approver.answer("y");
-    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("not sealed"));
+    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("denied"));
+    assert!(approver.text().contains("not sealed"), "{}", approver.text());
     assert_eq!(rpc1(&w, "result", json!({"id": refused}))["status"], "denied");
 
     let (one_time, public) = new_key();

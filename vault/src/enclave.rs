@@ -104,7 +104,7 @@ fn only<'a>(set: &'a [u8], name: &str, tag: u8) -> Option<&'a [u8]> {
 
 /// Whether the blob's key agreement needs the current fingers and nothing else
 /// will do: `ed.acl.ock` is exactly `{ cbio: { pbioc, pbioh } }`. `ock` is the
-/// operation, and `cbio` the constraint `.biometryCurrentSet` leaves; `.biometryAny`
+/// operation, and `cbio` the constraint `.biometryCurrentSet` leaves. Any fingerprint
 /// and a passcode alternative leave others, and an ungated key leaves `TRUE`.
 pub fn requires_current_biometry(blob: &[u8]) -> bool {
     fn read(blob: &[u8]) -> Option<bool> {
@@ -116,9 +116,7 @@ pub fn requires_current_biometry(blob: &[u8]) -> bool {
         let [(b"cbio", SET, constraint)] = entries(compute_key)?[..] else { return None };
         Some(!only(constraint, "pbioc", OCTETS)?.is_empty() && !only(constraint, "pbioh", OCTETS)?.is_empty())
     }
-    let _ = read;
-    let _ = blob;
-    true // red: the gate is not written yet
+    read(blob).unwrap_or(false)
 }
 
 /// A key that has passed the gate. Nothing else here reaches the hardware.
@@ -131,6 +129,12 @@ pub struct GatedKey {
 impl GatedKey {
     /// The check, and the only way to one.
     pub fn open(hardware: &'static dyn Hardware, blob: Zeroizing<Vec<u8>>) -> anyhow::Result<Self> {
+        if !requires_current_biometry(&blob) {
+            bail!("this enclave key is not bound to the current fingerprints, and is refused");
+        }
+        if hardware.opens_unattended(&blob).context("asking the enclave about this key")? {
+            bail!("this enclave key works without Touch ID, and is refused");
+        }
         let public = hardware.public_key(&blob)?;
         Ok(GatedKey { hardware, blob, public })
     }
