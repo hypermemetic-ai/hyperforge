@@ -36,6 +36,10 @@ path = "src/bin/vault-get.rs"
 name = "vault-encrypt"
 path = "src/bin/vault-encrypt.rs"
 
+[[bin]]
+name = "vault-login"
+path = "src/bin/vault-login.rs"
+
 [[test]]
 name = "e2e"
 path = "tests/e2e.rs"
@@ -49,6 +53,11 @@ required-features = ["server"]
 [[test]]
 name = "gate"
 path = "tests/gate.rs"
+required-features = ["server"]
+
+[[test]]
+name = "login"
+path = "tests/login.rs"
 required-features = ["server"]
 
 [features]
@@ -81,13 +90,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
+# vault-login and the owner's token refresh: HTTPS to WorkOS on the client half.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
 
 # The latest published plexus line, from crates.io. driver/ is on sibling paths
 # from before 0.6.1 was published, so the workspace holds both for now; move
 # these when the workspace moves to the next published line.
 plexus-core = { version = "0.6", optional = true }
-# The namespaced Principal, which plexus-core does not re-export.
-plexus-auth-core = { version = "0.2", optional = true }
+# The namespaced Principal, which plexus-core does not re-export, and
+# `adapters` for OidcAdapter, Carriers and the reqwest JWKS fetcher.
+plexus-auth-core = { version = "0.2", features = ["adapters"], optional = true }
 plexus-macros = { version = "0.6", optional = true }
 plexus-transport = { version = "0.5", default-features = false, optional = true }
 # The activation macro's expansion names these two directly.
@@ -101,5 +114,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 
 [dev-dependencies]
 tempfile = "3"
-base64 = "0.22"
 jsonwebtoken = "9"

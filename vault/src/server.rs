@@ -8,7 +8,7 @@
 //!   the rename that retires it.
 //! - `audit.jsonl`: append-only.
 
-use crate::owner::OwnerProof;
+use crate::owner::{OwnerProof, Requester};
 use crate::wire::*;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,10 @@ struct Record {
     /// When the request reached a closed status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     closed_at: Option<u64>,
+    /// The machine that asked, verified on its socket; none for the owner.
+    /// Off the wire: `RequestSummary` is what the approver compares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    machine: Option<String>,
 }
 
 struct Inner {
@@ -59,6 +63,21 @@ struct Inner {
     audit: File,
 }
 
+/// The vault's state. Each public method that serves a caller takes the proof
+/// that caller was admitted; the proofs come only from
+/// [`crate::owner::OwnerGate`], so skipping the gate does not compile.
+///
+/// ```compile_fail,E0061
+/// # fn f(store: &hyperforge_vault::server::Store) {
+/// let _ = store.list();
+/// # }
+/// ```
+///
+/// Nor can a proof be made by hand:
+///
+/// ```compile_fail,E0451
+/// let _ = hyperforge_vault::owner::OwnerProof { _sealed: () };
+/// ```
 pub struct Store {
     dir: PathBuf,
     request_ttl: Duration,
@@ -174,7 +193,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn put(&self, name: &str, ciphertext: &str) -> anyhow::Result<()> {
+    pub fn put(&self, _owner: &OwnerProof, name: &str, ciphertext: &str) -> anyhow::Result<()> {
         if !valid_secret_name(name) {
             bail!("'{}' is not a secret name: 1 to 64 of A-Z a-z 0-9 . _ -, starting with a letter or digit", printable(name, 70));
         }
@@ -195,7 +214,7 @@ impl Store {
         self.audit(&mut inner, "put", name, None)
     }
 
-    pub fn list(&self) -> anyhow::Result<Vec<(String, u64, u64)>> {
+    pub fn list(&self, _owner: &OwnerProof) -> anyhow::Result<Vec<(String, u64, u64)>> {
         let mut out = Vec::new();
         for entry in fs::read_dir(self.dir.join("secrets"))? {
             let entry = entry?;
@@ -212,7 +231,7 @@ impl Store {
         Ok(out)
     }
 
-    pub fn request(&self, secret: &str, purpose: &str, one_time_pubkey: &str, caller: Option<&str>) -> anyhow::Result<(String, u64)> {
+    pub fn request(&self, who: &Requester, secret: &str, purpose: &str, one_time_pubkey: &str, caller: Option<&str>) -> anyhow::Result<(String, u64)> {
         self.sweep()?;
         if !valid_secret_name(secret) || !self.secret_path(secret).exists() {
             bail!("no secret '{}'", printable(secret, 70));
@@ -245,7 +264,7 @@ impl Store {
             created_at: now,
             expires_at: now + self.request_ttl.as_millis() as u64,
         };
-        let record = Record { summary: summary.clone(), status: Status::Pending, sealed: None, result_expires_at: None, closed_at: None };
+        let record = Record { summary: summary.clone(), status: Status::Pending, sealed: None, result_expires_at: None, closed_at: None, machine: who.machine().map(str::to_string) };
         self.persist(&record)?;
         inner.requests.insert(summary.id.clone(), record);
         self.audit(inner, "request", secret, Some(&summary))?;
@@ -253,11 +272,11 @@ impl Store {
         Ok((summary.id, summary.expires_at))
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<RequestSummary> {
+    pub fn subscribe(&self, _owner: &OwnerProof) -> broadcast::Receiver<RequestSummary> {
         self.pending_tx.subscribe()
     }
 
-    pub fn pending(&self) -> anyhow::Result<Vec<RequestSummary>> {
+    pub fn pending(&self, _owner: &OwnerProof) -> anyhow::Result<Vec<RequestSummary>> {
         self.sweep()?;
         let inner = self.lock();
         let mut out: Vec<_> = inner.requests.values().filter(|r| r.status == Status::Pending).map(|r| r.summary.clone()).collect();
@@ -314,12 +333,13 @@ impl Store {
     }
 
     /// The status, and on the one read of a fulfilled request, the sealed
-    /// result: it is off disk before it is returned.
-    pub fn result(&self, id: &str) -> anyhow::Result<(ResultStatus, Option<String>)> {
+    /// result: it is off disk before it is returned. A machine sees only its
+    /// own: anyone else's reads as an id that does not exist.
+    pub fn result(&self, who: &Requester, id: &str) -> anyhow::Result<(ResultStatus, Option<String>)> {
         self.sweep()?;
         let mut inner = self.lock();
         let inner = &mut *inner;
-        let record = inner.requests.get_mut(id).context("no such request")?;
+        let record = inner.requests.get_mut(id).filter(|r| who.may_read(r.machine.as_deref())).context("no such request")?;
         match record.status {
             Status::Pending => Ok((ResultStatus::Pending, None)),
             Status::Denied => Ok((ResultStatus::Denied, None)),
@@ -338,7 +358,7 @@ impl Store {
     }
 
     /// The last `limit` audit lines (all, without one).
-    pub fn audit_log(&self, limit: Option<u32>) -> anyhow::Result<Vec<AuditEntry>> {
+    pub fn audit_log(&self, _owner: &OwnerProof, limit: Option<u32>) -> anyhow::Result<Vec<AuditEntry>> {
         let text = {
             let _inner = self.lock();
             fs::read_to_string(self.dir.join("audit.jsonl"))?
@@ -375,8 +395,8 @@ pub mod activation {
     }
 
     impl VaultActivation {
-        /// With no owner: `get_request`, `fulfill` and `deny` refuse everyone
-        /// until [`Self::with_owner`] says otherwise.
+        /// With no owner: every method refuses everyone until
+        /// [`Self::with_owner`] says otherwise.
         pub fn new(store: Arc<Store>) -> Self {
             VaultActivation { store, owner: OwnerGate::unconfigured() }
         }
@@ -391,22 +411,25 @@ pub mod activation {
         description = "Ciphertext only: each read of a secret is approved by its owner",
         crate_path = "plexus_core"
     )]
+    // Every method takes `auth` and passes the gate before it touches the
+    // store: `Store` will not compile otherwise. The transport has already
+    // refused a socket with no valid identity; this is the check that decides.
     impl VaultActivation {
         #[plexus_macros::method(
-            description = "Store a ciphertext under a new name; anything not age format is refused",
+            description = "Owner only: store a ciphertext under a new name; anything not age format is refused",
             params(name = "The secret's name", ciphertext = "An age file, armored")
         )]
-        pub async fn put(&self, name: String, ciphertext: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let event = match self.store.put(&name, &ciphertext) {
+        pub async fn put(&self, auth: Option<&AuthContext>, name: String, ciphertext: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let event = match self.owner.admit(auth).and_then(|owner| self.store.put(&owner, &name, &ciphertext)) {
                 Ok(()) => VaultEvent::Stored { name },
                 Err(e) => refused(e),
             };
             stream! { yield event; }
         }
 
-        #[plexus_macros::method(streaming, description = "The stored secrets: names and sizes")]
-        pub async fn list(&self) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let listed = self.store.list();
+        #[plexus_macros::method(streaming, description = "Owner only: the stored secrets, names and sizes")]
+        pub async fn list(&self, auth: Option<&AuthContext>) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let listed = self.owner.admit(auth).and_then(|owner| self.store.list(&owner));
             stream! {
                 match listed {
                     Ok(secrets) => for (name, size, stored_at) in secrets {
@@ -426,17 +449,17 @@ pub mod activation {
                 caller = "Who is asking: shown to the owner, unverified"
             )
         )]
-        pub async fn request(&self, secret: String, purpose: String, one_time_pubkey: String, caller: Option<String>) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let event = match self.store.request(&secret, &purpose, &one_time_pubkey, caller.as_deref()) {
+        pub async fn request(&self, auth: Option<&AuthContext>, secret: String, purpose: String, one_time_pubkey: String, caller: Option<String>) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let event = match self.owner.admit_requester(auth).and_then(|who| self.store.request(&who, &secret, &purpose, &one_time_pubkey, caller.as_deref())) {
                 Ok((id, expires_at)) => VaultEvent::Requested { id, expires_at },
                 Err(e) => refused(e),
             };
             stream! { yield event; }
         }
 
-        #[plexus_macros::method(streaming, description = "The requests waiting for the owner")]
-        pub async fn pending(&self) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let pending = self.store.pending();
+        #[plexus_macros::method(streaming, description = "Owner only: the requests waiting for an answer")]
+        pub async fn pending(&self, auth: Option<&AuthContext>) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let pending = self.owner.admit(auth).and_then(|owner| self.store.pending(&owner));
             stream! {
                 match pending {
                     Ok(requests) => for request in requests {
@@ -475,22 +498,29 @@ pub mod activation {
         }
 
         #[plexus_macros::method(description = "A request's outcome; a sealed result is returned once and deleted", params(id = "The request"))]
-        pub async fn result(&self, id: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let event = match self.store.result(&id) {
+        pub async fn result(&self, auth: Option<&AuthContext>, id: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let event = match self.owner.admit_requester(auth).and_then(|who| self.store.result(&who, &id)) {
                 Ok((status, sealed)) => VaultEvent::Result { id, status, sealed },
                 Err(e) => refused(e),
             };
             stream! { yield event; }
         }
 
-        #[plexus_macros::method(streaming, description = "The requests waiting now, then each new one, for the approver")]
-        pub async fn watch(&self) -> impl Stream<Item = VaultEvent> + Send + 'static {
+        #[plexus_macros::method(streaming, description = "Owner only: the requests waiting now, then each new one, for the approver")]
+        pub async fn watch(&self, auth: Option<&AuthContext>) -> impl Stream<Item = VaultEvent> + Send + 'static {
             // Subscribed before the snapshot: a request between the two is seen twice, not never.
-            let mut new = self.store.subscribe();
+            let admitted = self.owner.admit(auth).map(|owner| {
+                let new = self.store.subscribe(&owner);
+                (owner, new)
+            });
             let store = self.store.clone();
             stream! {
+                let (owner, mut new) = match admitted {
+                    Ok(admitted) => admitted,
+                    Err(e) => { yield refused(e); return; }
+                };
                 let mut seen = HashSet::new();
-                match store.pending() {
+                match store.pending(&owner) {
                     Ok(requests) => for request in requests {
                         seen.insert(request.id.clone());
                         yield VaultEvent::Pending { request };
@@ -502,7 +532,7 @@ pub mod activation {
                         Ok(request) => if seen.insert(request.id.clone()) {
                             yield VaultEvent::Pending { request };
                         },
-                        Err(RecvError::Lagged(_)) => match store.pending() {
+                        Err(RecvError::Lagged(_)) => match store.pending(&owner) {
                             Ok(requests) => for request in requests {
                                 if seen.insert(request.id.clone()) {
                                     yield VaultEvent::Pending { request };
@@ -516,9 +546,9 @@ pub mod activation {
             }
         }
 
-        #[plexus_macros::method(streaming, description = "The audit log, oldest first", params(limit = "Only the last this many lines"))]
-        pub async fn audit(&self, limit: Option<u32>) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let entries = self.store.audit_log(limit);
+        #[plexus_macros::method(streaming, description = "Owner only: the audit log, oldest first", params(limit = "Only the last this many lines"))]
+        pub async fn audit(&self, auth: Option<&AuthContext>, limit: Option<u32>) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let entries = self.owner.admit(auth).and_then(|owner| self.store.audit_log(&owner, limit));
             stream! {
                 match entries {
                     Ok(entries) => for entry in entries {

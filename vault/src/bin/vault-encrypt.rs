@@ -4,6 +4,7 @@
 use anyhow::{bail, Context};
 use clap::Parser;
 use hyperforge_vault::client::Rpc;
+use hyperforge_vault::login::WorkosArgs;
 use hyperforge_vault::manifest;
 use hyperforge_vault::wire::{is_age_format, valid_secret_name};
 use serde_json::json;
@@ -23,6 +24,8 @@ struct Args {
     #[arg(long, env = "VAULT_AGE", default_value = "age")]
     age: PathBuf,
     /// The approver's manifest: this ciphertext's hash is recorded here.
+    #[command(flatten)]
+    workos: WorkosArgs,
     #[arg(long, env = "VAULT_MANIFEST")]
     manifest: PathBuf,
 }
@@ -56,7 +59,8 @@ async fn main() -> anyhow::Result<()> {
     if !is_age_format(&ciphertext) {
         bail!("age's output does not parse as age");
     }
-    let rpc = Rpc::connect(&args.server).await.context("connecting to the vault")?;
+    let token = args.workos.login()?.token().await?;
+    let rpc = Rpc::connect(&args.server, &token).await.context("connecting to the vault")?;
     rpc.call("put", json!({"name": args.name, "ciphertext": ciphertext})).await?;
     // After the server took it: a refused overwrite must not move the entry.
     manifest::record(&args.manifest, &args.name, &ciphertext)

@@ -2,6 +2,8 @@
 //! endpoint. Nothing here reaches WorkOS. The keys in `keys.rs` are
 //! plexus-auth-core's published test fixtures, private to no one.
 
+#![allow(dead_code)]
+
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

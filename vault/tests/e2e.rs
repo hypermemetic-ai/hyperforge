@@ -3,6 +3,9 @@
 //! a private HOME, a clean environment and its own state directory, and every
 //! process is stopped by its own handle.
 
+#[path = "support/idp.rs"]
+mod idp;
+
 use base64::Engine;
 use futures::StreamExt;
 use plexus_client::{decode, ClientEvent, MethodRef, Transport, WsTransport};
@@ -53,7 +56,12 @@ struct World {
     recovery: PathBuf,
     recipients: PathBuf,
     manifest: PathBuf,
+    idp: idp::Idp,
+    /// The owner's WorkOS access token, as the approver holds it.
     owner_credential: String,
+    refresh_token: String,
+    /// A machine's token: what `vault-run` and `vault-get` present.
+    machine_credential: String,
     port: u16,
     canary: String,
     value: Vec<u8>,
@@ -92,12 +100,18 @@ impl World {
         };
         let canary = canary_line();
         let value = format!("{canary}\nsecond line\n").into_bytes();
-        // A throwaway, this world's alone: the approver holds it, the server
-        // only its hash.
-        let owner_credential = format!("owner-{}", canary_line());
-        fs::write(root.join("owner.credential"), &owner_credential).unwrap();
+        // Throwaways, this world's alone. The owner's sign-in is what
+        // vault-login would have left; the server knows neither its token nor
+        // its refresh token. The machine's token reaches it only as a hash.
+        let idp = idp::Idp::start();
+        let owner_credential = idp.token(idp::OWNER);
+        let refresh_token = format!("refresh-{}", canary_line());
+        fs::write(root.join("login.json"), json!({"access_token": owner_credential, "refresh_token": refresh_token}).to_string()).unwrap();
+        let machine_credential = format!("machine-{}", canary_line());
+        fs::write(root.join("machine.credential"), &machine_credential).unwrap();
+        fs::write(root.join("machines"), format!("publish {}\n", sha_hex(machine_credential.as_bytes()))).unwrap();
         let manifest = root.join("manifest.json");
-        World { _tmp: tmp, root, home, state, logs, bin, owner, recovery, recipients, manifest, owner_credential, port, canary, value, n: Mutex::new(0) }
+        World { _tmp: tmp, root, home, state, logs, bin, owner, recovery, recipients, manifest, idp, owner_credential, refresh_token, machine_credential, port, canary, value, n: Mutex::new(0) }
     }
 
     fn url(&self) -> String {
@@ -117,7 +131,10 @@ impl World {
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("VAULT_URL", self.url())
             .env("VAULT_MANIFEST", &self.manifest)
-            .env("VAULT_OWNER_CREDENTIAL_FILE", self.root.join("owner.credential"))
+            .env("VAULT_WORKOS_CLIENT_ID", idp::CLIENT)
+            .env("VAULT_WORKOS_BASE", &self.idp.base)
+            .env("VAULT_LOGIN_FILE", self.root.join("login.json"))
+            .env("VAULT_CREDENTIAL_FILE", self.root.join("machine.credential"))
             .env("PLEXUS_NO_REGISTRY", "1")
             .env("PLEXUS_WS_TRACE", "1");
         c
@@ -129,7 +146,7 @@ impl World {
 
     fn server_with(&self, request_ttl: u64, result_ttl: u64) -> Server {
         let mut command = self.command(VAULT);
-        command.env("VAULT_OWNER_CREDENTIAL_HASH", sha_hex(self.owner_credential.as_bytes()));
+        command.env("VAULT_OWNER_USER_ID", idp::OWNER).env("VAULT_MACHINE_CREDENTIALS", self.root.join("machines"));
         self.server_from(command, request_ttl, result_ttl)
     }
 
@@ -439,18 +456,22 @@ fn rpc_as(url: &str, credential: Option<&str>, method: &'static str, params: Val
     })
 }
 
-/// The call's only event, whatever it is.
+/// [`rpc_as`], as the owner.
+fn rpc_owner(w: &World, method: &'static str, params: Value) -> Result<Vec<Value>, String> {
+    rpc_as(&w.url(), Some(&w.owner_credential), method, params)
+}
+
+/// The call's only event, whatever it is. Every method now wants a credential,
+/// so what was an anonymous look is the owner's.
 fn rpc1(w: &World, method: &'static str, params: Value) -> Value {
-    let mut events = rpc(&w.url(), method, params).unwrap();
+    let mut events = rpc_owner(w, method, params).unwrap();
     assert_eq!(events.len(), 1, "{method}: {events:?}");
     events.pop().unwrap()
 }
 
 /// [`rpc1`], as the owner: the call the approver would make.
 fn rpc1_owner(w: &World, method: &'static str, params: Value) -> Value {
-    let mut events = rpc_as(&w.url(), Some(&w.owner_credential), method, params).unwrap();
-    assert_eq!(events.len(), 1, "{method}: {events:?}");
-    events.pop().unwrap()
+    rpc1(w, method, params)
 }
 
 /// Refused by the socket, or by the method: either way, it did nothing.
@@ -590,7 +611,7 @@ fn an_expired_request_gives_nothing() {
     assert!(!caller.wait().success());
     assert!(!out.exists());
     assert!(w.audit_events().iter().any(|e| e == "expire"), "{:?}", w.audit_events());
-    assert!(rpc(&w.url(), "pending", json!({})).unwrap().is_empty());
+    assert!(rpc_owner(&w, "pending", json!({})).unwrap().is_empty());
 }
 
 #[test]
@@ -765,10 +786,10 @@ fn a_restart_keeps_pending_requests() {
     assert!(w.encrypt("s").status.success());
     let out = w.root.join("hash");
     let mut caller = w.run_cmd("s", "survive", &w.hash_script(&out));
-    wait_until("the request", SHELL_WAIT, || rpc(&w.url(), "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
+    wait_until("the request", SHELL_WAIT, || rpc_owner(&w, "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
     server.crash();
     let _server = w.server();
-    let pending = rpc(&w.url(), "pending", json!({})).unwrap();
+    let pending = rpc_owner(&w, "pending", json!({})).unwrap();
     assert_eq!(pending.len(), 1, "{pending:?}");
     assert_eq!(pending[0]["purpose"], "survive");
     let mut approver = w.approver();
@@ -787,7 +808,7 @@ fn a_request_that_lapsed_while_down_is_expired_after_restart() {
     server.crash();
     std::thread::sleep(Duration::from_millis(1500));
     let _server = w.server_with(1, 60);
-    assert!(rpc(&w.url(), "pending", json!({})).unwrap().is_empty());
+    assert!(rpc_owner(&w, "pending", json!({})).unwrap().is_empty());
     assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "expired");
 }
 
@@ -880,9 +901,9 @@ fn the_audit_log_has_every_event_and_no_value() {
     assert!(!text.contains(&w.canary));
     assert!(!text.contains("AGE ENCRYPTED"), "ciphertext in the audit log");
     // vault.audit says the same, and the log only grows.
-    let listed = rpc(&w.url(), "audit", json!({})).unwrap();
+    let listed = rpc_owner(&w, "audit", json!({})).unwrap();
     assert_eq!(listed.len(), entries.len());
-    rpc(&w.url(), "list", json!({})).unwrap();
+    rpc_owner(&w, "list", json!({})).unwrap();
     assert!(w.encrypt_value("s2", b"more").status.success());
     let after = fs::read(w.state.join("audit.jsonl")).unwrap();
     assert!(after.len() > before.len() && after.starts_with(&before));
@@ -906,7 +927,7 @@ fn put_refuses_what_is_not_age_a_bad_name_and_an_overwrite() {
     assert_eq!(rpc1(&w, "put", json!({"name": "s", "ciphertext": good}))["type"], "stored");
     let v = rpc1(&w, "put", json!({"name": "s", "ciphertext": good}));
     assert!(is_error(&v), "an overwrite must be refused: {v}");
-    let listed = rpc(&w.url(), "list", json!({})).unwrap();
+    let listed = rpc_owner(&w, "list", json!({})).unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["name"], "s");
 }
@@ -1008,11 +1029,13 @@ fn a_browser_page_cannot_open_the_socket() {
     let _server = w.server();
     let mut s = std::net::TcpStream::connect(("127.0.0.1", w.port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // With the owner's own token: the origin check has to hold by itself.
     let request = |origin: &str| format!(
         "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{origin}\r\n");
+         Authorization: Bearer {}\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{origin}\r\n", w.owner_credential);
     s.write_all(request("Origin: https://evil.example\r\n").as_bytes()).unwrap();
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; 1024];
     let n = s.read(&mut buf).unwrap();
     assert!(!String::from_utf8_lossy(&buf[..n]).contains("101"), "{}", String::from_utf8_lossy(&buf[..n]));
     // Control: the same upgrade with no Origin is what the tools send.
@@ -1097,8 +1120,8 @@ fn a_non_owner_fulfil_is_refused() {
     assert!(w.encrypt("s").status.success());
     let out = w.root.join("hash");
     let mut caller = w.run_cmd("s", "forge me", &w.hash_script(&out));
-    wait_until("the request", SHELL_WAIT, || rpc(&w.url(), "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
-    let pending = rpc(&w.url(), "pending", json!({})).unwrap();
+    wait_until("the request", SHELL_WAIT, || rpc_owner(&w, "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
+    let pending = rpc_owner(&w, "pending", json!({})).unwrap();
     let (id, public) = (pending[0]["id"].as_str().unwrap(), pending[0]["one_time_pubkey"].as_str().unwrap());
     let forged = seal_for(public, b"a value the attacker chose");
     let answer = rpc(&w.url(), "fulfill", json!({"id": id, "sealed": forged}));
@@ -1163,10 +1186,14 @@ fn a_wrong_credential_is_refused_on_all_three() {
 #[test]
 fn with_no_owner_configured_all_three_are_refused() {
     let w = World::new();
-    let _server = w.server_without_owner();
+    // Nobody can store or ask on the server under test, so a server with an
+    // owner seeds its state first.
+    let seeding = w.server();
     assert!(w.encrypt("s").status.success());
     let (_, public) = new_key();
     let id = request_raw(&w, "s", "ownerless", &public);
+    drop(seeding);
+    let ownerless = w.server_without_owner();
     let sealed = seal_for(&public, b"forged");
     for credential in [None, Some(w.owner_credential.as_str())] {
         for (method, params) in [
@@ -1178,6 +1205,8 @@ fn with_no_owner_configured_all_three_are_refused() {
             assert!(refused(answer.clone()), "{method} with {credential:?}: {answer:?}");
         }
     }
+    drop(ownerless);
+    let _server = w.server();
     assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "pending");
 }
 
@@ -1191,10 +1220,81 @@ fn the_owner_credential_stays_out_of_state_and_logs() {
     approver.answer("y");
     assert!(caller.wait().success());
     let mut hits = Vec::new();
+    let signature = w.owner_credential.rsplit('.').next().unwrap();
     for dir in [&w.state, &w.logs, &w.home] {
-        scan(dir, &needles(&w.owner_credential), &mut hits);
+        for secret in [w.owner_credential.as_str(), signature, w.refresh_token.as_str(), w.machine_credential.as_str()] {
+            scan(dir, &needles(secret), &mut hits);
+        }
     }
     assert_eq!(hits, Vec::<String>::new());
+}
+
+// ---- HYPE-17: a token ends and the approver carries on --------------------
+
+/// A sign-in whose access token has `seconds` left, and a refresh token that
+/// mints an hour.
+fn short_sign_in(w: &World, seconds: i64) {
+    let refresh = format!("refresh-{}", idp::nonce());
+    let access = w.idp.token_lasting(idp::OWNER, seconds);
+    fs::write(w.root.join("login.json"), json!({"access_token": access, "refresh_token": refresh}).to_string()).unwrap();
+    w.idp.accept_refresh(&refresh, 3600);
+}
+
+#[test]
+fn the_approvers_reconnect_gets_a_fresh_token() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    short_sign_in(&w, 8);
+    let mut approver = w.approver();
+    wait_until("the watch to lose its token and come back", SHELL_WAIT, || w.idp.refreshes() == 1 && approver.text().matches("watching").count() >= 2);
+    let out = w.root.join("hash");
+    let mut caller = w.run_cmd("s", "after the token ended", &w.hash_script(&out));
+    approver.answer("y");
+    assert!(caller.wait().success());
+    assert_eq!(fs::read_to_string(&out).unwrap().trim(), sha_hex(&w.value));
+    let login: Value = serde_json::from_slice(&fs::read(w.root.join("login.json")).unwrap()).unwrap();
+    assert_ne!(login["access_token"], w.owner_credential, "the refreshed sign-in is on disk");
+}
+
+/// The socket's token ends with the owner reading the prompt: their answer is
+/// not lost with it.
+#[test]
+fn an_answer_outlives_the_watch_socket() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    short_sign_in(&w, 8);
+    let mut approver = w.approver();
+    let out = w.root.join("hash");
+    let mut caller = w.run_cmd("s", "slow reader", &w.hash_script(&out));
+    wait_until("the prompt", SHELL_WAIT, || approver.text().contains(PROMPT));
+    std::thread::sleep(Duration::from_secs(9));
+    approver.answer("y");
+    assert!(caller.wait().success());
+    assert_eq!(fs::read_to_string(&out).unwrap().trim(), sha_hex(&w.value));
+}
+
+/// The contract: when the session ends, `--once` does not reconnect.
+#[test]
+fn once_exits_nonzero_when_its_session_ends() {
+    let w = World::new();
+    let _server = w.server();
+    short_sign_in(&w, 7);
+    let mut approver = w.approver_once();
+    assert!(!approver.exit().success());
+    assert_eq!(w.idp.refreshes(), 0, "--once does not refresh and carry on");
+}
+
+/// A sign-in that has gone bad says what to do, and the server stays shut.
+#[test]
+fn a_dead_sign_in_says_run_vault_login() {
+    let w = World::new();
+    let _server = w.server();
+    fs::write(w.root.join("login.json"), json!({"access_token": w.idp.token_lasting(idp::OWNER, -1), "refresh_token": "revoked"}).to_string()).unwrap();
+    let mut approver = w.approver_once();
+    assert!(!approver.exit().success());
+    assert!(approver.text().contains("vault-login"), "{}", approver.text());
 }
 
 #[test]
@@ -1204,7 +1304,7 @@ fn once_handles_one_request_and_exits() {
     assert!(w.encrypt("s").status.success());
     let out = w.root.join("hash");
     let mut caller = w.run_cmd("s", "just this one", &w.hash_script(&out));
-    wait_until("the request", SHELL_WAIT, || rpc(&w.url(), "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
+    wait_until("the request", SHELL_WAIT, || rpc_owner(&w, "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
     let (_, public) = new_key();
     let second = request_raw(&w, "s", "not this one", &public);
 

@@ -39,26 +39,58 @@ age1...
 
 `vault-encrypt` warns if this file names only one.
 
-## 4. The owner credential and the server
+## 4. The server
 
-On the Mac, make the credential and print its hash. Only the hash goes to the
-server, and the credential itself never leaves this file:
-
-```sh
-(umask 077; openssl rand -hex 32 > ~/.config/vault/owner.credential)
-tr -d '\n' < ~/.config/vault/owner.credential | shasum -a 256 | cut -d' ' -f1
-```
-
-On the server, with that hash:
+`config/production.env` holds who the vault serves: the WorkOS client and the owner's
+user id, both public. On the server:
 
 ```sh
-hyperforge-vault --bind <address> --state-dir /path/to/state --owner-credential-hash <hash>
+set -a; . vault/config/production.env; set +a
+hyperforge-vault --bind <address> --state-dir /path/to/state \
+  --machine-credentials /path/to/machines
 ```
 
-The default bind is `127.0.0.1:4470`. Read "Not yet protected" in the README
-before binding anything wider. Without `--owner-credential-hash` the server still
-runs, and refuses `get_request`, `fulfill` and `deny` for everyone: no request can
-be answered.
+The default bind is `127.0.0.1:4470`; a tailnet address also works, and anything else
+needs `--allow-unsafe-bind`. Without both the client id and the owner's user id the server
+still runs, and refuses everyone.
+
+## The owner's sign-in, on the Mac
+
+Register this redirect URI on the WorkOS client first, byte for byte:
+
+```
+http://127.0.0.1:4471/callback
+```
+
+Then, with the same two values in the environment:
+
+```sh
+set -a; . vault/config/production.env; set +a
+vault-login
+```
+
+It opens the browser, listens on that address, and writes `~/.config/vault/login.json`,
+owner-only. `--provider` picks the sign-in when `authkit` is not what the environment uses,
+and `--redirect-uri` changes the URI. Sign in again whenever a tool says to run `vault-login`.
+
+## A machine caller
+
+On the machine, make a token and print its hash. Only the hash goes to the server:
+
+```sh
+(umask 077; openssl rand -hex 32 > ~/.config/vault/machine.credential)
+tr -d '\n' < ~/.config/vault/machine.credential | sha256sum | cut -d' ' -f1
+```
+
+On the server, add a line to the `--machine-credentials` file, then restart it:
+
+```
+# name, then the sha256 of its token
+publish <hash>
+```
+
+A machine may `request` and read its own `result`, nothing else. `vault-run` and `vault-get`
+take the token with `--credential-file` or `VAULT_CREDENTIAL_FILE`.
 
 ## 5. Each secret
 
@@ -68,6 +100,7 @@ never passes through `vault-encrypt`:
 ```sh
 export VAULT_URL=ws://<address>:4470
 export VAULT_MANIFEST=~/.config/vault/manifest.json
+set -a; . vault/config/production.env; set +a
 vault-encrypt npm-token ~/.config/vault/recipients.txt < /path/to/value
 ```
 
@@ -85,8 +118,7 @@ Leave this running on the Mac:
 
 ```sh
 vault-approve --identity ~/.config/vault/owner.identity --server "$VAULT_URL" \
-  --manifest ~/.config/vault/manifest.json \
-  --owner-credential-file ~/.config/vault/owner.credential
+  --manifest ~/.config/vault/manifest.json
 ```
 
 Or add `--once` to handle one request and exit: zero if it was approved or denied,

@@ -16,13 +16,10 @@ pub struct Rpc {
 }
 
 impl Rpc {
-    pub async fn connect(url: &str) -> anyhow::Result<Rpc> {
-        let transport = WsTransport::connect(url, SERVICE).await.map_err(|e| anyhow!("{e}"))?;
-        Ok(Rpc { transport })
-    }
-
-    /// A connection that presents the owner's credential on the upgrade.
-    pub async fn connect_as_owner(url: &str, credential: &str) -> anyhow::Result<Rpc> {
+    /// A connection presenting `credential` on the upgrade: the owner's
+    /// WorkOS token ([`crate::login`]) or a machine's. There is no other kind:
+    /// the server refuses a socket that presents nothing.
+    pub async fn connect(url: &str, credential: &str) -> anyhow::Result<Rpc> {
         let headers = [("Authorization".to_string(), format!("Bearer {credential}"))];
         let transport = WsTransport::connect_with_headers(url, SERVICE, &headers).await.map_err(|e| anyhow!("{e}"))?;
         Ok(Rpc { transport })
@@ -47,13 +44,13 @@ impl Rpc {
     }
 }
 
-/// The owner's credential, from its file. Empty is an error, not an anonymous
-/// approver.
+/// A machine's credential, from its file. Empty is an error, not an anonymous
+/// caller.
 pub fn read_credential(path: &Path) -> anyhow::Result<Zeroizing<String>> {
-    let text = Zeroizing::new(std::fs::read_to_string(path).with_context(|| format!("reading the owner credential {}", path.display()))?);
+    let text = Zeroizing::new(std::fs::read_to_string(path).with_context(|| format!("reading the credential {}", path.display()))?);
     let credential = Zeroizing::new(text.trim().to_string());
     if credential.is_empty() {
-        bail!("the owner credential {} is empty", path.display());
+        bail!("the credential {} is empty", path.display());
     }
     Ok(credential)
 }
@@ -85,6 +82,7 @@ pub fn fingerprint(pubkey: &str) -> &str {
 /// What a caller asks for.
 pub struct Ask<'a> {
     pub url: &'a str,
+    pub credential: &'a str,
     pub secret: &'a str,
     pub purpose: &'a str,
     pub caller: &'a str,
@@ -98,7 +96,7 @@ pub async fn fetch(ask: Ask<'_>) -> anyhow::Result<Zeroizing<Vec<u8>>> {
     let identity = age::x25519::Identity::generate();
     let public = identity.to_public().to_string();
 
-    let mut rpc = Rpc::connect(ask.url).await.context("connecting to the vault")?;
+    let mut rpc = Rpc::connect(ask.url, ask.credential).await.context("connecting to the vault")?;
     let id = match rpc
         .call("request", json!({"secret": ask.secret, "purpose": ask.purpose, "one_time_pubkey": public, "caller": ask.caller}))
         .await?
@@ -120,7 +118,7 @@ pub async fn fetch(ask: Ask<'_>) -> anyhow::Result<Zeroizing<Vec<u8>>> {
             // request survives a restart, so reconnect and go on asking.
             Err(e) if !is_connection_failure(&e) => return Err(e),
             Err(_) => {
-                if let Ok(fresh) = Rpc::connect(ask.url).await {
+                if let Ok(fresh) = Rpc::connect(ask.url, ask.credential).await {
                     rpc = fresh;
                 }
                 continue;

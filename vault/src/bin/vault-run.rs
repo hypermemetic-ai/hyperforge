@@ -3,7 +3,8 @@
 
 use anyhow::{bail, Context};
 use clap::Parser;
-use hyperforge_vault::client::{default_caller, fetch, no_core_dumps, Ask};
+use std::path::PathBuf;
+use hyperforge_vault::client::{default_caller, fetch, no_core_dumps, read_credential, Ask};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
@@ -21,6 +22,9 @@ struct Args {
     /// The environment variable that carries the value.
     #[arg(long = "env", value_name = "NAME", default_value = "VAULT_SECRET")]
     env: String,
+    /// A file holding this machine's vault credential.
+    #[arg(long, env = "VAULT_CREDENTIAL_FILE")]
+    credential_file: PathBuf,
     #[arg(long, env = "VAULT_URL", default_value = "ws://127.0.0.1:4470")]
     server: String,
     /// Who is asking, as shown to the owner (default: user@host).
@@ -49,7 +53,9 @@ async fn main() -> anyhow::Result<()> {
         bail!("--env {:?} is not an environment variable name", args.env);
     }
     let caller = args.caller.clone().unwrap_or_else(default_caller);
+    let credential = read_credential(&args.credential_file)?;
     let value = fetch(Ask {
+        credential: &credential,
         url: &args.server,
         secret: &args.secret,
         purpose: &args.purpose,

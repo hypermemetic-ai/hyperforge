@@ -6,10 +6,11 @@ use anyhow::{bail, Context};
 use clap::Parser;
 use futures::StreamExt;
 use plexus_client::ClientEvent;
-use hyperforge_vault::client::{fingerprint, read_credential, Rpc};
+use hyperforge_vault::client::{fingerprint, Rpc};
+use hyperforge_vault::login::{Login, WorkosArgs};
 use hyperforge_vault::manifest;
 use hyperforge_vault::wire::*;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -34,9 +35,8 @@ struct Args {
     /// not match is never decrypted.
     #[arg(long, env = "VAULT_MANIFEST")]
     manifest: PathBuf,
-    /// A file holding the owner's credential.
-    #[arg(long, env = "VAULT_OWNER_CREDENTIAL_FILE")]
-    owner_credential_file: PathBuf,
+    #[command(flatten)]
+    workos: WorkosArgs,
     /// Handle one pending request, waiting for one if need be, and exit: zero
     /// if it was approved or denied, otherwise non-zero. No reconnecting.
     #[arg(long)]
@@ -156,8 +156,17 @@ async fn reseal(age: &Path, identity: &Path, ciphertext: String, key: &str) -> a
     Ok(String::from_utf8(sealed.stdout).context("age's armored output is not text")?)
 }
 
+/// One call on its own connection, with a token good for now. The watch's
+/// socket closes when its token ends, which can be under the prompt or during
+/// Touch ID; an answer the owner has given must not go down with it.
+async fn owner_call(args: &Args, login: &Login, method: &'static str, params: Value) -> anyhow::Result<VaultEvent> {
+    let token = login.token().await?;
+    let rpc = Rpc::connect(&args.server, &token).await?;
+    rpc.call(method, params).await
+}
+
 /// Shows one request and acts on the answer.
-async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Result<Outcome> {
+async fn handle(args: &Args, login: &Login, request: &RequestSummary) -> anyhow::Result<Outcome> {
     let secret = printable(&request.secret, 64);
     let purpose = printable(&request.purpose, MAX_PURPOSE);
     let caller = printable(&request.caller, MAX_CALLER);
@@ -173,13 +182,13 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
     let answer = tokio::task::spawn_blocking(ask).await.context("the prompt")??;
     let Some(yes) = answer else { return Ok(Outcome::NoAnswer) };
     if !yes {
-        rpc.call("deny", json!({"id": request.id})).await?;
+        owner_call(args, login, "deny", json!({"id": request.id})).await?;
         println!("denied");
         return Ok(Outcome::Denied);
     }
     // Fetched only now: it may have lapsed under the prompt, and then there is
     // no reason for Touch ID to fire.
-    let (fresh, ciphertext) = match rpc.call("get_request", json!({"id": request.id})).await? {
+    let (fresh, ciphertext) = match owner_call(args, login, "get_request", json!({"id": request.id})).await? {
         VaultEvent::Request { request, ciphertext } => (request, ciphertext),
         other => bail!("unexpected answer: {other:?}"),
     };
@@ -191,13 +200,13 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
     // Touch ID fires for bytes the manifest does not know.
     if let Err(e) = manifest::verify(&args.manifest, &request.secret, &ciphertext) {
         eprintln!("refused, nothing decrypted: {e:#}");
-        rpc.call("deny", json!({"id": request.id})).await?;
+        owner_call(args, login, "deny", json!({"id": request.id})).await?;
         println!("denied");
         return Ok(Outcome::Refused);
     }
     match reseal(&args.age, &args.identity, ciphertext, &request.one_time_pubkey).await {
         Ok(sealed) => {
-            rpc.call("fulfill", json!({"id": request.id, "sealed": sealed})).await?;
+            owner_call(args, login, "fulfill", json!({"id": request.id, "sealed": sealed})).await?;
             println!("approved and sealed");
             Ok(Outcome::Approved)
         }
@@ -205,7 +214,7 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
         // the caller should not sit out the timeout.
         Err(e) => {
             eprintln!("not sealed: {e:#}");
-            rpc.call("deny", json!({"id": request.id})).await?;
+            owner_call(args, login, "deny", json!({"id": request.id})).await?;
             println!("denied");
             Ok(Outcome::Refused)
         }
@@ -213,8 +222,10 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
 }
 
 /// One connection's life. `Ok`: stop. `Err`: reconnect, or under `--once`, exit.
-async fn session(args: &Args, credential: &str, seen: &mut HashSet<String>) -> anyhow::Result<()> {
-    let rpc = Rpc::connect_as_owner(&args.server, credential).await?;
+async fn session(args: &Args, login: &Login, seen: &mut HashSet<String>) -> anyhow::Result<()> {
+    // Asked for afresh on every reconnect: the socket ends with its token.
+    let token = login.token().await?;
+    let rpc = Rpc::connect(&args.server, &token).await?;
     println!("watching {}", args.server);
     let mut events = rpc.stream("watch", json!({}));
     while let Some(event) = events.next().await {
@@ -226,7 +237,7 @@ async fn session(args: &Args, credential: &str, seen: &mut HashSet<String>) -> a
                 if request.expires_at <= now_ms() {
                     continue;
                 }
-                match handle(args, &rpc, &request).await {
+                match handle(args, login, &request).await {
                     Ok(outcome) if args.once => return outcome.finish(),
                     Err(e) if args.once => return Err(e),
                     Ok(Outcome::NoAnswer) => return Ok(()),
@@ -248,10 +259,10 @@ async fn main() -> anyhow::Result<()> {
     if !args.identity.exists() {
         bail!("no identity at {}", args.identity.display());
     }
-    let credential = read_credential(&args.owner_credential_file)?;
+    let login = args.workos.login()?;
     let mut seen = HashSet::new();
     loop {
-        match session(&args, &credential, &mut seen).await {
+        match session(&args, &login, &mut seen).await {
             Ok(()) => return Ok(()),
             Err(e) if args.once => return Err(e),
             Err(e) => {
