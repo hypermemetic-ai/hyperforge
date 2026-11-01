@@ -46,6 +46,10 @@ name = "interop"
 path = "tests/interop.rs"
 
 [[test]]
+name = "platform"
+path = "tests/platform.rs"
+
+[[test]]
 name = "owner_seam"
 path = "tests/owner_seam.rs"
 required-features = ["server"]

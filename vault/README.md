@@ -34,7 +34,7 @@ promise. The ciphertext is ordinary age format: any age implementation opens it.
 | Binary | Runs on | Does |
 |---|---|---|
 | `hyperforge-vault` | the server | Stores ciphertext, moves sealed results, writes the audit log. Has no key. |
-| `vault-approve` | the owner's Mac | Watches requests, asks, checks the manifest, decrypts in process, reading the identity file at each decrypt. `--once` handles one request and exits. `recovery-keygen --out <file>` writes a recovery identity and prints its recipient. |
+| `vault-approve` | the owner's Mac | Watches requests, asks, checks the manifest, decrypts in process, reading the identity file at each decrypt. `--once` handles one request and exits. `recovery-keygen --out <file>` writes a recovery identity and prints its recipient. `recover <name>` opens one ciphertext with that identity, to stdout only. |
 | `vault-encrypt` | the owner's Mac | Encrypts stdin to a recipients file, stores the ciphertext, records its hash in the manifest. |
 | `vault-run` | the caller | Runs a command with the secret in one environment variable. |
 | `vault-get` | the caller | Prints the secret to a pipe; a terminal needs `--allow-terminal`. |
@@ -72,6 +72,19 @@ It is ignored by default and never fetches anything:
 VAULT_AGE_CLI_DIR=/dir/holding/age PLEXUS_NO_REGISTRY=1 \
   cargo test -p hyperforge-vault --test interop -- --ignored
 ```
+
+`--all-features` turns on `memory-scan-test`, which lets a test binary keep the
+owner's tools dumpable so the suite can read their memory. It is for tests only:
+never build a real tool with it, or with `--all-features`.
+
+## The platform layer
+
+`src/platform.rs` is compiled into the binaries by `#[path]` and is no part of the
+library: the zeroing allocator, memory locking and core-dump settings are decisions
+for a process on a desktop, and the library is what a mobile build shares. TTY
+handling lives in the binaries too. `tests/platform.rs` fails if any of these reach
+the library. For the same reason recovery's logic is `keys::recover`, which returns
+the plaintext to its caller, and only `vault-approve` prints it.
 
 ## Keys
 
@@ -161,19 +174,52 @@ a request or refuse one.
 
 Limits that will stay:
 
-- **Inside the owner's tools.** `vault-encrypt` and `vault-approve` now hold the
-  value in their own memory while they work, which the `age` CLI used to do for
-  them. Their own buffers are zeroized and core dumps are off, but the `age` crate
-  keeps the chunk it is encrypting in a plain `Vec`, and nothing locks these pages
-  out of swap. Measured: after a release, the value is still in the memory of a
-  long-running `vault-approve`, in freed heap, until it is reused. Anything that
-  can read this user's process memory on the Mac can read it, then and during the
-  approval.
+- **Inside the owner's tools.** `vault-encrypt` and `vault-approve` hold the value
+  in their own memory while they work, which the `age` CLI used to do for them.
+  Anything that can read this process's memory during that time can read it. See
+  below for what shortens that time and what does not.
 - **Same user.** `vault-run` puts the value in the command's environment, where
   another process of the same user can read it from `/proc`. Run what you do not
   trust as a different user.
 - **`PLEXUS_WS_TRACE` is a debug tool.** It prints raw frames, so caller-written
   text reaches your terminal unsanitised. Never set it on a real approver.
+
+### Memory in the owner's tools
+
+`vault-approve`, including `recover`, and `vault-encrypt` run on a heap that wipes
+every block as it is freed, including the `Vec`s inside the `age` crate that no
+`Zeroizing` reaches, and that locks every heap block out of swap. Core dumps are
+off: `RLIMIT_CORE` is 0, and on Linux the process is also undumpable, since the
+limit does not bind a core piped to a handler such as systemd-coredump. That also
+closes `/proc/<pid>/mem` and ptrace to this user's other processes.
+
+If memory cannot be locked the tool says so on stderr and goes on. With
+`--require-memory-lock` it stops instead, before any value at startup, and sends no
+seal if a block fails to lock later. `mlockall` is not used: it does not exist on
+macOS, and on Linux it can make a thread's stack fail to map under a low limit.
+
+Measured: the suite's canary is gone from both tools 300 ms after each of three
+releases, at two value sizes, where before it stayed. That is the test, not a proof
+of absence.
+
+**Not covered:**
+
+- **Stack copies.** Stack frames are neither wiped nor locked. The scan finds none,
+  but nothing prevents one, and a finished thread's stack can be reused unwiped.
+- **While the value is in use.** A live value is plaintext in memory until freed.
+  On macOS these tools are not undumpable, so what stops a same-user debugger there
+  is the system's own policy, not this code.
+- **The terminal.** Its scrollback, under `--allow-terminal`, is the terminal's.
+- **Kernel buffers.** The pipe into `vault-encrypt` or out of `recover`.
+- **The caller's copy after a release.** `vault-get` and `vault-run` have neither the
+  heap nor the locking, only `RLIMIT_CORE`, and `vault-run` hands the value to a
+  child's environment. Wiping the approver does nothing for those.
+- **Hibernation.** A locked page is still written to the hibernation image, under
+  full-disk encryption if it is on.
+- **The window at startup.** Blocks allocated before `lock_heap` runs are wiped but
+  not locked. Nothing secret exists by then.
+- **The allocator's bookkeeping.** Bytes outside a block's requested size are not
+  ours to wipe, and `recover`'s stdout, or any other process, is outside it.
 
 ## Licence
 

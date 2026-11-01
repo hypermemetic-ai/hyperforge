@@ -1,8 +1,11 @@
 //! Prints a secret to stdout: into a pipe, or to a terminal only when told.
 
+#[path = "../platform.rs"]
+mod platform;
+
 use anyhow::bail;
 use clap::Parser;
-use hyperforge_vault::client::{default_caller, fetch, no_core_dumps, Ask};
+use hyperforge_vault::client::{default_caller, fetch, Ask};
 use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
@@ -31,7 +34,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    no_core_dumps();
+    platform::no_core_dumps()?;
     let args = Args::parse();
     let mut stdout = std::io::stdout().lock();
     // Before the request: there is no use troubling the owner for this.

@@ -32,6 +32,8 @@ file, which is created owner-only and never over an existing one. Put `recovery.
 on paper or an offline drive, then remove it from this machine. Without it, a lost
 Mac loses every secret.
 
+The key alone is not enough to recover: see step 5.
+
 ## 3. The recipients file, on the Mac
 
 One recipient per line, as many as you want. A line `vault-encrypt` cannot read
@@ -82,6 +84,12 @@ This also records the ciphertext's hash in the manifest, which the approver
 checks before any decrypt. Enrol from the machine that approves: a secret the
 manifest does not hold is refused.
 
+**Copy `manifest.json` to where the recovery key is, after every secret you
+enrol.** It lives on the Mac, and recovery checks every ciphertext against it, so
+a lost Mac with no copy of it means a recovery key that opens nothing. It is not
+secret: it holds names and hashes. A copy older than a secret, or than its
+rotation, refuses that secret.
+
 Avoid `echo value | …` in an interactive shell, which leaves it in your history.
 Names are 1 to 64 of `A-Z a-z 0-9 . _ -`, starting with a letter or digit, and
 are never overwritten: see "Rotating a secret" in the README.
@@ -112,11 +120,30 @@ The approver shows the request, Touch ID fires on `y` (once step 1 exists), and 
 
 ## Recovery
 
-On a machine with the offline key, copy `secrets/<name>.age` from the server. The
-file is plain age format and the key is an age identity, so any age implementation
-opens it. The vault has no command for this, so this one step does need the `age`
-CLI, on that machine, for that day:
+Recovery needs this crate's `vault-approve` and nothing else: no `age` tool, no
+server and no network. Build the client half, and bring three files to a machine
+you trust:
+
+- the offline `recovery.key`,
+- your copy of `manifest.json` (step 5),
+- `secrets/<name>.age`, copied from the server.
 
 ```sh
-age -d -i recovery.key < <name>.age
+vault-approve recover <name> --ciphertext <name>.age \
+  --identity recovery.key --manifest manifest.json > /path/you/chose
 ```
+
+The value goes to stdout and nowhere else: there is no option to write a file, and
+nothing is logged. The redirect above is your decision, and the file it makes is
+plaintext on disk. To feed a command, pipe it instead.
+
+- A terminal is refused, as the value would stay in the scrollback. Pass
+  `--allow-terminal` to accept that.
+- A ciphertext whose sha256 is not the manifest's entry for `<name>` is refused
+  before the key is read, as is a name with no entry or a missing manifest.
+- A file cut short gives an error and no part of the value.
+- Memory that cannot be locked gives a warning; `--require-memory-lock` makes it
+  fatal. Prefer to run this somewhere with encrypted swap, or none.
+
+Every ciphertext is plain age format, so any age tool still opens it with this key,
+if you have reason to skip the hash check. That is your call and not this command's.

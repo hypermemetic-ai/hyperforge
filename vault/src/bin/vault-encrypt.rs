@@ -1,14 +1,21 @@
 //! Encrypts stdin on this machine, in this process, and stores the ciphertext.
 //! The plaintext moves through one zeroizing buffer and is held nowhere else.
 
+#[path = "../platform.rs"]
+mod platform;
+
 use anyhow::{bail, Context};
 use clap::Parser;
-use hyperforge_vault::client::{no_core_dumps, Rpc};
+use hyperforge_vault::client::Rpc;
 use hyperforge_vault::{keys, manifest};
 use hyperforge_vault::wire::{is_age_format, valid_secret_name};
 use serde_json::json;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
+
+/// Everything freed in this process is wiped: see `platform`.
+#[global_allocator]
+static HEAP: platform::Zeroing = platform::Zeroing(std::alloc::System);
 
 #[derive(Parser, Debug)]
 #[command(name = "vault-encrypt", about = "Encrypt stdin to a recipients file, locally, and store the ciphertext")]
@@ -23,12 +30,17 @@ struct Args {
     /// The approver's manifest: this ciphertext's hash is recorded here.
     #[arg(long, env = "VAULT_MANIFEST")]
     manifest: PathBuf,
+    /// Stop, before reading a value, if memory cannot be locked out of swap.
+    #[arg(long)]
+    require_memory_lock: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    no_core_dumps();
+    platform::undumpable()?;
+    let locked = platform::lock_heap();
     let args = Args::parse();
+    platform::require_or_warn(locked, args.require_memory_lock)?;
     if !valid_secret_name(&args.name) {
         bail!("{:?} is not a secret name", args.name);
     }
@@ -44,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
     // one is never zeroed.
     let mut stdin = std::fs::File::from(std::io::stdin().as_fd().try_clone_to_owned().context("stdin")?);
     let ciphertext = keys::encrypt(&recipients, &mut stdin)?;
+    platform::check_locks(args.require_memory_lock)?;
     if !is_age_format(&ciphertext) {
         bail!("the output does not parse as age");
     }

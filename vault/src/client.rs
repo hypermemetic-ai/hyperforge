@@ -69,13 +69,6 @@ pub fn default_caller() -> String {
     format!("{user}@{host}")
 }
 
-/// A core dump of a process holding a value would be a value on disk.
-pub fn no_core_dumps() {
-    let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-    // SAFETY: `none` outlives the call.
-    unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
-}
-
 /// The tail of a public key: what the owner compares between the caller's
 /// terminal and the prompt, if they want to know the server did not swap it.
 pub fn fingerprint(pubkey: &str) -> &str {

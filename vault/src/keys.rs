@@ -135,6 +135,23 @@ pub fn reseal(identity_file: &Path, formats: &[&dyn KeyFormat], ciphertext: &str
     encrypt(std::slice::from_ref(&one_time), &mut plain)
 }
 
+/// The recovery path, for whoever holds the offline key: `ciphertext` opened with
+/// `identity_file` if the manifest holds it as `name`, and the plaintext handed to
+/// the caller, who decides where it goes. The hash is checked before the identity
+/// is read, and a value comes back only once its last chunk has authenticated, so
+/// a cut file gives an error and no part of the value.
+pub fn recover(manifest: &Path, name: &str, identity_file: &Path, formats: &[&dyn KeyFormat], ciphertext: &str) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+    crate::manifest::verify(manifest, name, ciphertext)?;
+    let reader = age::armor::ArmoredReader::new(ciphertext.as_bytes());
+    let decryptor = age::Decryptor::new_buffered(reader).context("the ciphertext is not age format")?;
+    let identities = load_identities(identity_file, formats)?;
+    let mut plain = decryptor.decrypt(identities.iter().map(|i| i.as_ref())).context("the ciphertext does not open with this identity")?;
+    // Sized up front: a Vec that grew would leave unzeroized copies behind.
+    let mut value = Zeroizing::new(Vec::with_capacity(ciphertext.len()));
+    plain.read_to_end(&mut value).context("reading the ciphertext: it is cut short or corrupt, and nothing is returned")?;
+    Ok(value)
+}
+
 /// Runs `work`, which may block on the owner, on its own thread, and stops
 /// waiting after `limit`. A thread and not `spawn_blocking`: the runtime would
 /// wait for that at exit, and `--once` must be able to give up.
@@ -354,6 +371,27 @@ mod tests {
         std::fs::write(&wrong_path, format!("{}\n", wrong.to_string().expose_secret())).unwrap();
         let (_, one_time_public) = key();
         assert!(reseal(&wrong_path, FORMATS, &ciphertext, &one_time_public).is_err());
+    }
+
+    /// What a mobile build calls: no stdout, no terminal, the bytes in hand.
+    #[test]
+    fn recover_returns_the_value_and_only_for_what_the_manifest_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let (owner, public) = key();
+        let path = identity_file(dir.path(), &owner);
+        let manifest = dir.path().join("manifest.json");
+        let recipients = parse_recipients(&public, FORMATS).unwrap();
+        let value: Vec<u8> = (0..300_001u32).map(|i| (i % 251) as u8).collect();
+        let good = encrypt(&recipients, &mut value.as_slice()).unwrap();
+        let other = encrypt(&recipients, &mut &b"another"[..]).unwrap();
+        crate::manifest::record(&manifest, "s", &good).unwrap();
+        assert_eq!(*recover(&manifest, "s", &path, FORMATS, &good).unwrap(), value);
+        assert!(recover(&manifest, "s", &path, FORMATS, &other).is_err(), "a swap");
+        assert!(recover(&manifest, "t", &path, FORMATS, &good).is_err(), "no entry");
+        assert!(recover(&dir.path().join("none.json"), "s", &path, FORMATS, &good).is_err(), "no manifest");
+        // The check comes first: this is no identity at all, and says nothing.
+        let error = recover(&manifest, "s", &dir.path().join("no.key"), FORMATS, &other).err().unwrap();
+        assert!(error.to_string().contains("does not match"), "{error}");
     }
 
     #[test]

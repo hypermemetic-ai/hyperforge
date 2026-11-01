@@ -1,9 +1,12 @@
 //! Runs a command with a secret in its environment. The value is decrypted in
 //! this process's memory and handed to exec: never argv, never a file.
 
+#[path = "../platform.rs"]
+mod platform;
+
 use anyhow::{bail, Context};
 use clap::Parser;
-use hyperforge_vault::client::{default_caller, fetch, no_core_dumps, Ask};
+use hyperforge_vault::client::{default_caller, fetch, Ask};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
@@ -43,7 +46,7 @@ fn valid_env_name(name: &str) -> bool {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    no_core_dumps();
+    platform::no_core_dumps()?;
     let args = Args::parse();
     if !valid_env_name(&args.env) {
         bail!("--env {:?} is not an environment variable name", args.env);

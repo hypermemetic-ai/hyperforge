@@ -94,6 +94,25 @@ fn cli_ciphertext_opens_with_the_crate() {
     }
 }
 
+/// Recovery through our own command, of what the CLI wrote, and the CLI opening
+/// the same file with the same key: the two agree on what a recovery yields.
+#[test]
+#[ignore = "needs VAULT_AGE_CLI_DIR"]
+fn recover_and_the_cli_open_the_same_ciphertext_alike() {
+    use hyperforge_vault::manifest;
+    let dir = tempfile::tempdir().unwrap();
+    let (our_key, our_public) = ours(dir.path(), "recovery.key");
+    let ciphertext = String::from_utf8(age(&["-a", "-r", &our_public], &value())).unwrap();
+    let file = dir.path().join("s.age");
+    std::fs::write(&file, &ciphertext).unwrap();
+    let list = dir.path().join("manifest.json");
+    manifest::record(&list, "s", &ciphertext).unwrap();
+    let out = Command::new(APPROVE).env_clear().args(["recover", "s", "--ciphertext"]).arg(&file).args(["--identity", &our_key, "--manifest"]).arg(&list).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.stdout, value());
+    assert_eq!(age(&["-d", "-i", &our_key], ciphertext.as_bytes()), out.stdout);
+}
+
 /// The release path: CLI-encrypted, resealed by us, opened by the CLI with the
 /// one-time key alone.
 #[test]

@@ -2,19 +2,27 @@
 //! on a yes opens the ciphertext and seals it to the caller's one-time key, here
 //! in this process: the plaintext crosses one zeroizing buffer and goes no further.
 
+#[path = "../platform.rs"]
+mod platform;
+
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use plexus_client::ClientEvent;
-use hyperforge_vault::client::{fingerprint, no_core_dumps, read_credential, Rpc};
+use hyperforge_vault::client::{fingerprint, read_credential, Rpc};
 use hyperforge_vault::{keys, manifest};
 use hyperforge_vault::wire::*;
 use serde_json::json;
 use std::collections::HashSet;
-use std::io::{BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::io::{BufRead, IsTerminal, Read, Write};
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, UNIX_EPOCH};
+
+/// Everything freed in this process is wiped: see `platform`.
+#[global_allocator]
+static HEAP: platform::Zeroing = platform::Zeroing(std::alloc::System);
 
 /// How long Touch ID may be left waiting before the attempt is abandoned.
 const DECRYPT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -40,6 +48,10 @@ struct Args {
     /// if it was approved or denied, otherwise non-zero. No reconnecting.
     #[arg(long)]
     once: bool,
+    /// Stop, before any request, if memory cannot be locked out of swap, and
+    /// send no seal if a block fails to lock later.
+    #[arg(long)]
+    require_memory_lock: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -51,6 +63,29 @@ enum Tool {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Open one stored ciphertext with the offline recovery identity, and print
+    /// the value to stdout. Stdout only: nothing here writes a file. No server
+    /// is needed, and the ciphertext must match the manifest.
+    Recover {
+        /// The secret's name, as it is in the manifest.
+        name: String,
+        /// A copy of the server's `secrets/<name>.age`.
+        #[arg(long)]
+        ciphertext: PathBuf,
+        /// The recovery identity. Named every time: no environment variable, so
+        /// the owner's own identity is not picked up by accident.
+        #[arg(long)]
+        identity: PathBuf,
+        /// A copy of the manifest. A ciphertext it does not match is not opened.
+        #[arg(long, env = "VAULT_MANIFEST")]
+        manifest: PathBuf,
+        /// Print even though stdout is a terminal, where it stays in the scrollback.
+        #[arg(long)]
+        allow_terminal: bool,
+        /// Stop, before opening anything, if memory cannot be locked out of swap.
+        #[arg(long)]
+        require_memory_lock: bool,
+    },
 }
 
 /// What watching needs: [`Args`], with the requirements clap checked.
@@ -61,6 +96,7 @@ struct Watch {
     manifest: PathBuf,
     owner_credential_file: PathBuf,
     once: bool,
+    require_memory_lock: bool,
 }
 
 /// How one request ended.
@@ -169,6 +205,7 @@ async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Re
     }
     let (identity, key) = (args.identity.clone(), request.one_time_pubkey.clone());
     let sealed = keys::with_deadline(DECRYPT_TIMEOUT, move || keys::reseal(&identity, keys::FORMATS, &ciphertext, &key)).await;
+    let sealed = sealed.and_then(|sealed| platform::check_locks(args.require_memory_lock).map(|()| sealed));
     match sealed {
         Ok(sealed) => {
             rpc.call("fulfill", json!({"id": request.id, "sealed": sealed})).await?;
@@ -216,20 +253,48 @@ async fn session(args: &Watch, credential: &str, seen: &mut HashSet<String>) -> 
     bail!("the watch ended")
 }
 
+/// Prints one recovered value. The descriptor, unbuffered: std's stdout keeps its
+/// own buffer, which lives as long as the process and is never freed, so never
+/// wiped. Checked before anything is read: no use unlocking a key for this.
+fn recover(name: &str, ciphertext: &Path, identity: &Path, manifest: &Path, allow_terminal: bool) -> anyhow::Result<()> {
+    let mut stdout = std::fs::File::from(std::io::stdout().as_fd().try_clone_to_owned().context("stdout")?);
+    if stdout.is_terminal() && !allow_terminal {
+        bail!("stdout is a terminal; pipe it, or pass --allow-terminal");
+    }
+    let mut text = String::new();
+    let file = std::fs::File::open(ciphertext).with_context(|| format!("opening {}", ciphertext.display()))?;
+    file.take(MAX_CIPHERTEXT as u64 + 1).read_to_string(&mut text).with_context(|| format!("{} is not armored text", ciphertext.display()))?;
+    if text.len() > MAX_CIPHERTEXT {
+        bail!("{} is larger than any stored secret", ciphertext.display());
+    }
+    let value = keys::recover(manifest, name, identity, keys::FORMATS, &text)?;
+    stdout.write_all(&value).context("writing to stdout")
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    no_core_dumps();
+    platform::undumpable()?;
+    let locked = platform::lock_heap();
     let args = Args::parse();
-    if let Some(Tool::RecoveryKeygen { out }) = &args.command {
-        let recipient = keys::generate_recovery_identity(out)?;
-        eprintln!("wrote the recovery identity to {}; its public recipient follows", out.display());
-        println!("{recipient}");
-        return Ok(());
+    match &args.command {
+        Some(Tool::RecoveryKeygen { out }) => {
+            // Written once and left on paper: a warning is all this needs.
+            platform::require_or_warn(locked, false)?;
+            let recipient = keys::generate_recovery_identity(out)?;
+            eprintln!("wrote the recovery identity to {}; its public recipient follows", out.display());
+            println!("{recipient}");
+            return Ok(());
+        }
+        Some(Tool::Recover { name, ciphertext, identity, manifest, allow_terminal, require_memory_lock }) => {
+            platform::require_or_warn(locked, *require_memory_lock)?;
+            return recover(name, ciphertext, identity, manifest, *allow_terminal);
+        }
+        None => platform::require_or_warn(locked, args.require_memory_lock)?,
     }
     let (Some(identity), Some(manifest), Some(owner_credential_file)) = (args.identity, args.manifest, args.owner_credential_file) else {
         bail!("--identity, --manifest and --owner-credential-file are required");
     };
-    let args = Watch { identity, server: args.server, manifest, owner_credential_file, once: args.once };
+    let args = Watch { identity, server: args.server, manifest, owner_credential_file, once: args.once, require_memory_lock: args.require_memory_lock };
     if !args.identity.exists() {
         bail!("no identity at {}", args.identity.display());
     }
