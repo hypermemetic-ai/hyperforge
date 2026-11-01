@@ -6,6 +6,8 @@
 //! [`reseal`] see only those traits. A new key type is one more format in
 //! [`FORMATS`], and no change here.
 
+use crate::enclave::{self, GatedKey, Hardware, ThisMachine, IDENTITY_PREFIX};
+use crate::p256tag::P256TagIdentity;
 use age::secrecy::ExposeSecret;
 use anyhow::{bail, Context};
 use std::io::{ErrorKind, Read, Write};
@@ -52,8 +54,33 @@ impl KeyFormat for X25519 {
     }
 }
 
-/// What this build reads. The Secure Enclave format goes here when it exists.
-pub const FORMATS: &[&dyn KeyFormat] = &[&X25519];
+/// `age1tag1…` and `AGE-VAULT-ENCLAVE-1…`: a key in this Mac's Secure Enclave. The
+/// recipient is age's own, and encrypts on any machine. The identity goes through
+/// [`GatedKey`], so a line whose key does not need the current fingers stops here.
+pub struct SecureEnclave(pub &'static dyn Hardware);
+
+impl KeyFormat for SecureEnclave {
+    fn recipient(&self, line: &str) -> Option<anyhow::Result<Box<dyn age::Recipient>>> {
+        if !line.starts_with("age1tag1") {
+            return None;
+        }
+        Some(match line.parse::<age::tag::Recipient>() {
+            Ok(recipient) => Ok(Box::new(recipient)),
+            Err(_) => Err(anyhow::anyhow!("a malformed p256tag recipient")),
+        })
+    }
+
+    fn identity(&self, line: &str) -> Option<anyhow::Result<Box<dyn age::Identity>>> {
+        if !line.starts_with(IDENTITY_PREFIX) {
+            return None;
+        }
+        let key = enclave::parse_identity(line).and_then(|blob| GatedKey::open(self.0, blob));
+        Some(key.map(|key| Box::new(P256TagIdentity::new(key)) as Box<dyn age::Identity>))
+    }
+}
+
+/// What this build reads.
+pub const FORMATS: &[&dyn KeyFormat] = &[&X25519, &SecureEnclave(&ThisMachine)];
 
 fn key_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
     text.lines().enumerate().map(|(i, l)| (i + 1, l.trim())).filter(|(_, l)| !l.is_empty() && !l.starts_with('#'))
@@ -72,14 +99,19 @@ pub fn parse_recipients(text: &str, formats: &[&dyn KeyFormat]) -> anyhow::Resul
     Ok(recipients)
 }
 
-/// Every identity in a file. Errors name lines, never their text.
-pub fn load_identities(path: &Path, formats: &[&dyn KeyFormat]) -> anyhow::Result<Vec<Box<dyn age::Identity>>> {
+fn read_identity_file(path: &Path) -> anyhow::Result<Zeroizing<Vec<u8>>> {
     let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
     let mut text = Zeroizing::new(Vec::with_capacity(MAX_IDENTITY_FILE));
     file.take(MAX_IDENTITY_FILE as u64).read_to_end(&mut text).with_context(|| format!("reading {}", path.display()))?;
     if text.len() == MAX_IDENTITY_FILE {
         bail!("{} is too long for an identity file", path.display());
     }
+    Ok(text)
+}
+
+/// Every identity in a file. Errors name lines, never their text.
+pub fn load_identities(path: &Path, formats: &[&dyn KeyFormat]) -> anyhow::Result<Vec<Box<dyn age::Identity>>> {
+    let text = read_identity_file(path)?;
     let text = std::str::from_utf8(&text).map_err(|_| anyhow::anyhow!("{} is not text", path.display()))?;
     let mut identities = Vec::new();
     for (number, line) in key_lines(text) {
@@ -160,18 +192,17 @@ pub async fn with_deadline<T: Send + 'static>(limit: Duration, work: impl FnOnce
     std::thread::spawn(move || {
         let _ = done.send(work());
     });
-    tokio::time::timeout(limit, finished).await.context("the identity took too long")?.context("the decrypt died")?
+    let Ok(outcome) = tokio::time::timeout(limit, finished).await else {
+        // Giving up on the answer must take the question off the screen: a yes
+        // to a prompt nobody is waiting for would open nothing, and say nothing.
+        enclave::dismiss_prompt();
+        bail!("the identity took too long");
+    };
+    outcome.context("the decrypt died")?
 }
 
-/// Writes a new X25519 identity to `path`, in the format `age-keygen` writes:
-/// owner-only, and never over a file already there. Returns the recipient, the
-/// one part fit to print.
-pub fn generate_recovery_identity(path: &Path) -> anyhow::Result<String> {
-    let identity = age::x25519::Identity::generate();
-    let recipient = identity.to_public().to_string();
-    let created = humantime::format_rfc3339_seconds(SystemTime::now());
-    let secret = identity.to_string();
-    let text = Zeroizing::new(format!("# created: {created}\n# public key: {recipient}\n{}\n", secret.expose_secret()));
+/// Creates `path`, owner-only and never over a file already there, with `text`.
+fn write_new_key_file(path: &Path, text: &str) -> anyhow::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -183,7 +214,45 @@ pub fn generate_recovery_identity(path: &Path) -> anyhow::Result<String> {
         let _ = std::fs::remove_file(path);
         return Err(e).with_context(|| format!("writing {}", path.display()));
     }
+    Ok(())
+}
+
+/// Writes a new X25519 identity to `path`, in the format `age-keygen` writes:
+/// owner-only, and never over a file already there. Returns the recipient, the
+/// one part fit to print.
+pub fn generate_recovery_identity(path: &Path) -> anyhow::Result<String> {
+    let identity = age::x25519::Identity::generate();
+    let recipient = identity.to_public().to_string();
+    let created = humantime::format_rfc3339_seconds(SystemTime::now());
+    let secret = identity.to_string();
+    let text = Zeroizing::new(format!("# created: {created}\n# public key: {recipient}\n{}\n", secret.expose_secret()));
+    write_new_key_file(path, &text)?;
     Ok(recipient)
+}
+
+/// Makes the owner's key in the enclave and writes its identity to `path`, under
+/// the same rules as [`generate_recovery_identity`]. A key that comes back without
+/// the gate is never written. Touch ID does not fire: creating needs nobody, and
+/// the check forbids the interface. Returns the recipient.
+pub fn enrol(path: &Path, hardware: &'static dyn Hardware) -> anyhow::Result<String> {
+    let key = GatedKey::open(hardware, hardware.create()?)?;
+    let recipient = key.recipient()?;
+    let created = humantime::format_rfc3339_seconds(SystemTime::now());
+    let text = Zeroizing::new(format!("# created: {created}\n# public key: {recipient}\n{}\n", *key.identity_line()));
+    write_new_key_file(path, &text)?;
+    Ok(recipient)
+}
+
+/// The recipient of the enclave identity at `path`, once it has passed the gate.
+/// Touch ID does not fire, so this says the key is fit to use without using it.
+pub fn check_enrolment(path: &Path, hardware: &'static dyn Hardware) -> anyhow::Result<String> {
+    let text = read_identity_file(path)?;
+    let text = std::str::from_utf8(&text).map_err(|_| anyhow::anyhow!("{} is not text", path.display()))?;
+    let Some((number, line)) = key_lines(text).find(|(_, line)| line.starts_with(IDENTITY_PREFIX)) else {
+        bail!("{} holds no enclave identity", path.display());
+    };
+    let key = enclave::parse_identity(line).and_then(|blob| GatedKey::open(hardware, blob));
+    key.with_context(|| format!("{} line {number}", path.display()))?.recipient()
 }
 
 #[cfg(test)]

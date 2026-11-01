@@ -54,6 +54,10 @@ name = "platform"
 path = "tests/platform.rs"
 
 [[test]]
+name = "enclave"
+path = "tests/enclave.rs"
+
+[[test]]
 name = "owner_seam"
 path = "tests/owner_seam.rs"
 required-features = ["server"]
@@ -92,6 +96,13 @@ memory-scan-test = []
 # The client half of plexus; `ws-native` is its WebSocket.
 plexus-client = { version = "0.6", features = ["ws-native"] }
 age = { version = "0.12", features = ["armor"] }
+# The types in the age traits, and the Bech32 of age's own key strings.
+age-core = "0.12"
+bech32 = "0.11"
+# What `src/p256tag.rs` needs of HPKE. `age` holds all of these already.
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+p256 = "0.13"
 sha2 = "0.10"
 zeroize = "1"
 libc = "0.2"
@@ -125,7 +136,8 @@ tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
 
 [dev-dependencies]
-# The types in the age traits, for keys.rs's stand-in format.
-age-core = "0.12"
 tempfile = "3"
 jsonwebtoken = "9"
+# The software stand-in for the Secure Enclave: tests only, here and nowhere else.
+p256 = { version = "0.13", features = ["ecdh"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

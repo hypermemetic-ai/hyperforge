@@ -1541,6 +1541,48 @@ fn a_recipient_this_build_cannot_use_stores_nothing() {
     assert!(rpc_owner(&w, "list", json!({})).unwrap().is_empty());
 }
 
+/// The real tools with a real `age1tag1…` line, opened by the recovery key: the
+/// recipient needs no enclave. A Linux approver handed an enclave identity says
+/// so and seals nothing.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn an_enclave_recipient_encrypts_here_and_an_enclave_identity_is_refused_here() {
+    let w = World::new();
+    let _server = w.server();
+    // A public key only: nothing here can open what is sealed to it.
+    let enclave_line = "age1tag1qt8lw0ual6avlwmwatk888yqnmdamm7xfd0wak53ut6elz5c4swx2yqdj4e";
+    let mut list = fs::read_to_string(&w.recipients).unwrap();
+    list.push_str(enclave_line);
+    list.push('\n');
+    fs::write(&w.recipients, list).unwrap();
+    assert!(w.encrypt("s").status.success());
+    let armored = fs::read(w.secret_file("s")).unwrap();
+    assert_eq!(open_with_key_file(&w.recovery, &armored).unwrap(), w.value);
+
+    let identity = w.root.join("owner.identity");
+    let made = w.command(APPROVE).arg("enrol").arg("--out").arg(&identity).output().unwrap();
+    assert!(!made.status.success());
+    assert!(String::from_utf8_lossy(&made.stderr).contains("no Secure Enclave"), "{}", String::from_utf8_lossy(&made.stderr));
+    assert!(made.stdout.is_empty(), "printed a recipient for no key");
+    assert!(!identity.exists());
+
+    let line = bech32_identity();
+    fs::write(&identity, format!("{line}\n")).unwrap();
+    let mut approver = w.approver_with(&identity);
+    let (_id, public) = new_key();
+    let request = request_raw(&w, "s", "no enclave here", &public);
+    approver.answer("y");
+    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("not sealed"));
+    assert!(approver.text().contains("no Secure Enclave") || approver.text().contains("refused"), "{}", approver.text());
+    assert_eq!(rpc1(&w, "result", json!({"id": request}))["status"], "denied");
+}
+
+/// A well-formed line of the enclave's format that opens nothing.
+#[cfg(not(target_os = "macos"))]
+fn bech32_identity() -> String {
+    age_core::primitives::bech32_encode(bech32::Hrp::parse_unchecked("age-vault-enclave-"), &[4, 1, 0]).to_uppercase()
+}
+
 #[test]
 fn recovery_keygen_prints_nothing_secret() {
     let w = World::new();

@@ -11,7 +11,7 @@ use futures::StreamExt;
 use plexus_client::ClientEvent;
 use hyperforge_vault::client::{fingerprint, Rpc};
 use hyperforge_vault::login::{Login, WorkosArgs};
-use hyperforge_vault::{keys, manifest};
+use hyperforge_vault::{enclave, keys, manifest};
 use hyperforge_vault::wire::*;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -62,6 +62,20 @@ enum Tool {
         /// Where to write it. Refused if something is there.
         #[arg(long)]
         out: PathBuf,
+    },
+    /// Make the owner's key in this Mac's Secure Enclave, write its identity to a
+    /// new file, and print its public recipient. Touch ID does not fire: it fires
+    /// at each decrypt, and only the fingerprints enrolled now will open it.
+    Enrol {
+        /// Where to write it. Refused if something is there.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Say whether an enclave identity passes the gate, and print its recipient.
+    /// Uses the key for nothing, so Touch ID does not fire.
+    EnrolCheck {
+        #[arg(long)]
+        identity: PathBuf,
     },
     /// Open one stored ciphertext with the offline recovery identity, and print
     /// the value to stdout. Stdout only: nothing here writes a file. No server
@@ -295,6 +309,21 @@ async fn main() -> anyhow::Result<()> {
             platform::require_or_warn(locked, false)?;
             let recipient = keys::generate_recovery_identity(out)?;
             eprintln!("wrote the recovery identity to {}; its public recipient follows", out.display());
+            println!("{recipient}");
+            return Ok(());
+        }
+        Some(Tool::Enrol { out }) => {
+            // Holds no value, and the key is not in this process: a warning is enough.
+            platform::require_or_warn(locked, false)?;
+            let recipient = keys::enrol(out, &enclave::ThisMachine)?;
+            eprintln!("wrote the enclave identity to {}; its public recipient follows", out.display());
+            println!("{recipient}");
+            return Ok(());
+        }
+        Some(Tool::EnrolCheck { identity }) => {
+            platform::require_or_warn(locked, false)?;
+            let recipient = keys::check_enrolment(identity, &enclave::ThisMachine)?;
+            eprintln!("{} needs the current fingerprints: it passes", identity.display());
             println!("{recipient}");
             return Ok(());
         }
