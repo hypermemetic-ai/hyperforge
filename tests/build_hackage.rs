@@ -193,7 +193,7 @@ impl Fx {
         let mut out = Vec::new();
         while let Some(item) = stream.next().await {
             if let PlexusStreamItem::Data { content, .. } = item {
-                out.push(content);
+                out.push(content.into_value());
             }
         }
         out
