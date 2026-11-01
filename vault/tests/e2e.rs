@@ -52,6 +52,8 @@ struct World {
     owner: PathBuf,
     recovery: PathBuf,
     recipients: PathBuf,
+    manifest: PathBuf,
+    owner_credential: String,
     port: u16,
     canary: String,
     value: Vec<u8>,
@@ -90,7 +92,12 @@ impl World {
         };
         let canary = canary_line();
         let value = format!("{canary}\nsecond line\n").into_bytes();
-        World { _tmp: tmp, root, home, state, logs, bin, owner, recovery, recipients, port, canary, value, n: Mutex::new(0) }
+        // A throwaway, this world's alone: the approver holds it, the server
+        // only its hash.
+        let owner_credential = format!("owner-{}", canary_line());
+        fs::write(root.join("owner.credential"), &owner_credential).unwrap();
+        let manifest = root.join("manifest.json");
+        World { _tmp: tmp, root, home, state, logs, bin, owner, recovery, recipients, manifest, owner_credential, port, canary, value, n: Mutex::new(0) }
     }
 
     fn url(&self) -> String {
@@ -109,6 +116,8 @@ impl World {
             .env("HOME", &self.home)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("VAULT_URL", self.url())
+            .env("VAULT_MANIFEST", &self.manifest)
+            .env("VAULT_OWNER_CREDENTIAL_FILE", self.root.join("owner.credential"))
             .env("PLEXUS_NO_REGISTRY", "1")
             .env("PLEXUS_WS_TRACE", "1");
         c
@@ -119,9 +128,19 @@ impl World {
     }
 
     fn server_with(&self, request_ttl: u64, result_ttl: u64) -> Server {
+        let mut command = self.command(VAULT);
+        command.env("VAULT_OWNER_CREDENTIAL_HASH", sha_hex(self.owner_credential.as_bytes()));
+        self.server_from(command, request_ttl, result_ttl)
+    }
+
+    /// A server nobody told who its owner is.
+    fn server_without_owner(&self) -> Server {
+        self.server_from(self.command(VAULT), 300, 60)
+    }
+
+    fn server_from(&self, mut command: Command, request_ttl: u64, result_ttl: u64) -> Server {
         let log = fs::File::create(self.log("server")).unwrap();
-        let child = self
-            .command(VAULT)
+        let child = command
             .env("RUST_LOG", "trace")
             .args(["--bind", "127.0.0.1", "--port", &self.port.to_string()])
             .arg("--state-dir")
@@ -178,6 +197,13 @@ impl World {
     fn approver_untraced(&self) -> Approver {
         let mut command = self.command(APPROVE);
         command.env_remove("PLEXUS_WS_TRACE");
+        self.approver_from(command, &self.owner)
+    }
+
+    /// `vault-approve --once`.
+    fn approver_once(&self) -> Approver {
+        let mut command = self.command(APPROVE);
+        command.env_remove("PLEXUS_WS_TRACE").arg("--once");
         self.approver_from(command, &self.owner)
     }
 
@@ -341,6 +367,18 @@ impl Approver {
         self.prompts_answered = want;
         writeln!(self.stdin.as_mut().unwrap(), "{line}").unwrap();
     }
+
+    /// Waits for it to exit by itself.
+    fn exit(&mut self) -> std::process::ExitStatus {
+        let start = Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(start.elapsed() < SHELL_WAIT, "the approver did not exit: {}", self.text());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 impl Drop for Approver {
@@ -380,9 +418,15 @@ impl Drop for Caller {
 
 /// One raw RPC over the same WebSocket client the tools use: the data events.
 fn rpc(url: &str, method: &'static str, params: Value) -> Result<Vec<Value>, String> {
+    rpc_as(url, None, method, params)
+}
+
+/// [`rpc`], presenting `credential` as a Bearer token on the upgrade.
+fn rpc_as(url: &str, credential: Option<&str>, method: &'static str, params: Value) -> Result<Vec<Value>, String> {
+    let headers: Vec<(String, String)> = credential.map(|c| ("Authorization".to_string(), format!("Bearer {c}"))).into_iter().collect();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let t = WsTransport::connect(url, "hyperforge-vault").await.map_err(|e| e.to_string())?;
+        let t = WsTransport::connect_with_headers(url, "hyperforge-vault", &headers).await.map_err(|e| e.to_string())?;
         let mut items = decode::<Value>(t.call(MethodRef::new("vault", method), params));
         let mut out = Vec::new();
         while let Some(item) = items.next().await {
@@ -400,6 +444,21 @@ fn rpc1(w: &World, method: &'static str, params: Value) -> Value {
     let mut events = rpc(&w.url(), method, params).unwrap();
     assert_eq!(events.len(), 1, "{method}: {events:?}");
     events.pop().unwrap()
+}
+
+/// [`rpc1`], as the owner: the call the approver would make.
+fn rpc1_owner(w: &World, method: &'static str, params: Value) -> Value {
+    let mut events = rpc_as(&w.url(), Some(&w.owner_credential), method, params).unwrap();
+    assert_eq!(events.len(), 1, "{method}: {events:?}");
+    events.pop().unwrap()
+}
+
+/// Refused by the socket, or by the method: either way, it did nothing.
+fn refused(answer: Result<Vec<Value>, String>) -> bool {
+    match answer {
+        Err(_) => true,
+        Ok(events) => events.len() == 1 && is_error(&events[0]),
+    }
 }
 
 fn is_error(v: &Value) -> bool {
@@ -683,11 +742,11 @@ fn fulfill_is_refused_for_an_unknown_or_expired_id() {
     assert!(w.encrypt("s").status.success());
     let (_, public) = new_key();
     let sealed = seal_for(&public, b"not the value");
-    let v = rpc1(&w, "fulfill", json!({"id": "no-such-id", "sealed": sealed}));
+    let v = rpc1_owner(&w, "fulfill", json!({"id": "no-such-id", "sealed": sealed}));
     assert!(is_error(&v), "{v}");
     let id = request_raw(&w, "s", "expires", &public);
     std::thread::sleep(Duration::from_millis(1500));
-    let v = rpc1(&w, "fulfill", json!({"id": id, "sealed": sealed}));
+    let v = rpc1_owner(&w, "fulfill", json!({"id": id, "sealed": sealed}));
     assert!(is_error(&v), "{v}");
     assert!(!w.audit_events().iter().any(|e| e == "fulfill"));
     // Nor is what is not age format accepted, on a live request.
@@ -695,7 +754,7 @@ fn fulfill_is_refused_for_an_unknown_or_expired_id() {
     let _server2 = w2.server();
     assert!(w2.encrypt("s").status.success());
     let id = request_raw(&w2, "s", "garbage", &public);
-    let v = rpc1(&w2, "fulfill", json!({"id": id, "sealed": "hello"}));
+    let v = rpc1_owner(&w2, "fulfill", json!({"id": id, "sealed": "hello"}));
     assert!(is_error(&v), "{v}");
 }
 
@@ -962,4 +1021,294 @@ fn a_browser_page_cannot_open_the_socket() {
     s.write_all(request("").as_bytes()).unwrap();
     let n = s.read(&mut buf).unwrap();
     assert!(String::from_utf8_lossy(&buf[..n]).contains("101"), "{}", String::from_utf8_lossy(&buf[..n]));
+}
+
+// ---- HYPE-16: the manifest, the owner, --once ---------------------------
+
+/// The compromised server: `a` was approved, the bytes served are `b`'s, and
+/// both are real ciphertexts to the owner's key.
+#[test]
+fn a_swapped_ciphertext_is_refused_with_nothing_decrypted() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("a").status.success());
+    assert!(w.encrypt_value("b", b"the other secret\n").status.success());
+    fs::copy(w.secret_file("b"), w.secret_file("a")).unwrap();
+    // Control: what is served under `a` opens with the owner's key, so only a
+    // check before the decrypt can stop this.
+    let control = Command::new(format!("{REAL_AGE_DIR}/age")).arg("-d").arg("-i").arg(&w.owner).arg(w.secret_file("a")).output().unwrap();
+    assert_eq!(control.stdout, b"the other secret\n");
+
+    let mut approver = w.approver();
+    let out = w.root.join("hash");
+    let mut caller = w.run_cmd("a", "swap", &w.hash_script(&out));
+    approver.answer("y");
+    let status = caller.wait();
+    assert!(!out.exists(), "the attack worked: the caller received b under the name a");
+    assert!(!status.success());
+    let argv = fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default();
+    assert!(!argv.contains("-d "), "age decrypted a ciphertext the manifest does not know: {argv}");
+    let events = w.audit_events();
+    assert!(!events.iter().any(|e| e == "fulfill"), "{events:?}");
+    assert!(approver.text().contains("manifest"), "the refusal must say why: {}", approver.text());
+}
+
+/// A secret the manifest has never heard of: no entry, no decrypt.
+#[test]
+fn a_secret_outside_the_manifest_is_refused_with_nothing_decrypted() {
+    let w = World::new();
+    let _server = w.server();
+    let (_, public) = new_key();
+    let recipients = fs::read_to_string(&w.recipients).unwrap();
+    let stored = seal_for(recipients.lines().next().unwrap(), b"stored by someone else\n");
+    assert_eq!(rpc1(&w, "put", json!({"name": "stranger", "ciphertext": stored}))["type"], "stored");
+    request_raw(&w, "stranger", "unknown", &public);
+    let mut approver = w.approver();
+    approver.answer("y");
+    wait_until("the refusal", SHELL_WAIT, || w.audit_events().iter().any(|e| e == "deny" || e == "fulfill"));
+    let argv = fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default();
+    assert!(!argv.contains("-d "), "{argv}");
+    assert!(!w.audit_events().iter().any(|e| e == "fulfill"));
+}
+
+/// The rest of what `vault-encrypt` owes the manifest: a refused overwrite
+/// leaves the recorded hash alone, so the approved name still opens.
+#[test]
+fn a_refused_overwrite_leaves_the_manifest_alone() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let before = fs::read(&w.manifest).unwrap();
+    assert!(!w.encrypt_value("s", b"a value chosen later\n").status.success());
+    assert_eq!(fs::read(&w.manifest).unwrap(), before);
+    let mut approver = w.approver();
+    let out = w.root.join("hash");
+    let mut caller = w.run_cmd("s", "still fine", &w.hash_script(&out));
+    approver.answer("y");
+    assert!(caller.wait().success());
+    assert_eq!(fs::read_to_string(&out).unwrap().trim(), sha_hex(&w.value));
+}
+
+/// Any socket answering for the owner, with a value it chose.
+#[test]
+fn a_non_owner_fulfil_is_refused() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let out = w.root.join("hash");
+    let mut caller = w.run_cmd("s", "forge me", &w.hash_script(&out));
+    wait_until("the request", SHELL_WAIT, || rpc(&w.url(), "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
+    let pending = rpc(&w.url(), "pending", json!({})).unwrap();
+    let (id, public) = (pending[0]["id"].as_str().unwrap(), pending[0]["one_time_pubkey"].as_str().unwrap());
+    let forged = seal_for(public, b"a value the attacker chose");
+    let answer = rpc(&w.url(), "fulfill", json!({"id": id, "sealed": forged}));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!out.exists(), "the attack worked: the caller ran on a forged value");
+    assert!(refused(answer.clone()), "{answer:?}");
+    assert!(!w.audit_events().iter().any(|e| e == "fulfill"));
+    assert!(caller.child.try_wait().unwrap().is_none(), "the caller must still be waiting");
+    // And the owner's own answer still lands.
+    let mut approver = w.approver();
+    approver.answer("y");
+    assert!(caller.wait().success());
+    assert_eq!(fs::read_to_string(&out).unwrap().trim(), sha_hex(&w.value));
+}
+
+#[test]
+fn a_non_owner_get_request_is_refused() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let (_, public) = new_key();
+    let id = request_raw(&w, "s", "read me", &public);
+    let answer = rpc(&w.url(), "get_request", json!({"id": id}));
+    assert!(refused(answer.clone()), "{answer:?}");
+    assert_eq!(rpc1_owner(&w, "get_request", json!({"id": id}))["type"], "request");
+}
+
+#[test]
+fn a_non_owner_deny_is_refused() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let (_, public) = new_key();
+    let id = request_raw(&w, "s", "deny me", &public);
+    let answer = rpc(&w.url(), "deny", json!({"id": id}));
+    assert!(refused(answer.clone()), "{answer:?}");
+    assert!(!w.audit_events().iter().any(|e| e == "deny"));
+    assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "pending");
+    assert_eq!(rpc1_owner(&w, "deny", json!({"id": id}))["type"], "denied");
+}
+
+#[test]
+fn a_wrong_credential_is_refused_on_all_three() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let (_, public) = new_key();
+    let id = request_raw(&w, "s", "wrong key", &public);
+    let sealed = seal_for(&public, b"forged");
+    for (method, params) in [
+        ("get_request", json!({"id": id})),
+        ("fulfill", json!({"id": id, "sealed": sealed})),
+        ("deny", json!({"id": id})),
+    ] {
+        let answer = rpc_as(&w.url(), Some("not-the-credential"), method, params);
+        assert!(refused(answer.clone()), "{method}: {answer:?}");
+    }
+    assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "pending");
+}
+
+/// Fail closed: no configured owner means nobody, whatever they present.
+#[test]
+fn with_no_owner_configured_all_three_are_refused() {
+    let w = World::new();
+    let _server = w.server_without_owner();
+    assert!(w.encrypt("s").status.success());
+    let (_, public) = new_key();
+    let id = request_raw(&w, "s", "ownerless", &public);
+    let sealed = seal_for(&public, b"forged");
+    for credential in [None, Some(w.owner_credential.as_str())] {
+        for (method, params) in [
+            ("get_request", json!({"id": id})),
+            ("fulfill", json!({"id": id, "sealed": sealed})),
+            ("deny", json!({"id": id})),
+        ] {
+            let answer = rpc_as(&w.url(), credential, method, params);
+            assert!(refused(answer.clone()), "{method} with {credential:?}: {answer:?}");
+        }
+    }
+    assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "pending");
+}
+
+#[test]
+fn the_owner_credential_stays_out_of_state_and_logs() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let mut approver = w.approver();
+    let mut caller = w.run_cmd("s", "credential", "true");
+    approver.answer("y");
+    assert!(caller.wait().success());
+    let mut hits = Vec::new();
+    for dir in [&w.state, &w.logs, &w.home] {
+        scan(dir, &needles(&w.owner_credential), &mut hits);
+    }
+    assert_eq!(hits, Vec::<String>::new());
+}
+
+#[test]
+fn once_handles_one_request_and_exits() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let out = w.root.join("hash");
+    let mut caller = w.run_cmd("s", "just this one", &w.hash_script(&out));
+    wait_until("the request", SHELL_WAIT, || rpc(&w.url(), "pending", json!({})).map(|p| p.len() == 1).unwrap_or(false));
+    let (_, public) = new_key();
+    let second = request_raw(&w, "s", "not this one", &public);
+
+    let mut approver = w.approver_once();
+    approver.answer("y");
+    let status = approver.exit();
+    assert!(status.success(), "{status}: {}", approver.text());
+    assert!(caller.wait().success());
+    assert_eq!(fs::read_to_string(&out).unwrap().trim(), sha_hex(&w.value));
+    assert_eq!(approver.text().matches(PROMPT).count(), 1, "{}", approver.text());
+    // The second is left for the next run.
+    assert_eq!(rpc1(&w, "result", json!({"id": second}))["status"], "pending");
+}
+
+#[test]
+fn once_takes_a_no_and_exits() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let (_, public) = new_key();
+    let id = request_raw(&w, "s", "no thanks", &public);
+    let mut approver = w.approver_once();
+    approver.answer("n");
+    let status = approver.exit();
+    assert!(status.success(), "{status}: {}", approver.text());
+    assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "denied");
+    assert!(!fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default().contains("-d "));
+}
+
+/// `--once` has the same manners as the long-running approver, and tells its
+/// caller the request was not answered.
+#[test]
+fn once_refuses_a_swap_and_exits_nonzero() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("a").status.success());
+    assert!(w.encrypt_value("b", b"the other secret\n").status.success());
+    fs::copy(w.secret_file("b"), w.secret_file("a")).unwrap();
+    let (_, public) = new_key();
+    request_raw(&w, "a", "swap", &public);
+    let mut approver = w.approver_once();
+    approver.answer("y");
+    let status = approver.exit();
+    assert!(!status.success(), "{}", approver.text());
+    assert!(!fs::read_to_string(w.logs.join("age-argv.log")).unwrap_or_default().contains("-d "));
+}
+
+#[test]
+fn once_shows_a_hostile_purpose_as_text() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let (_, public) = new_key();
+    let purpose = "safe\x1b[2J\x1b]0;spoof\x07\nsecret: other\u{202e}";
+    request_raw(&w, "s", purpose, &public);
+    let mut approver = w.approver_once();
+    approver.answer("n");
+    let status = approver.exit();
+    assert!(status.success(), "{status}: {}", approver.text());
+    let shown = approver.text();
+    assert!(shown.contains("safe"), "{shown:?}");
+    assert!(!shown.contains('\x1b') && !shown.contains('\x07') && !shown.contains('\u{202e}'), "{shown:?}");
+    assert!(!shown.contains("\nsecret: other"), "the purpose forged a line: {shown:?}");
+}
+
+/// A terminal, keys already waiting in it when the question goes up: they
+/// must not answer it. Only a real tty has typeahead to flush.
+#[test]
+fn once_discards_typeahead_before_reading_the_answer() {
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("s").status.success());
+    let (_, public) = new_key();
+    let id = request_raw(&w, "s", "typed ahead", &public);
+    // `y` is in the tty's queue a second before the approver exists; after the
+    // prompt, and a pause in which a surviving `y` would be acted on, `n`.
+    let py = r#"
+import os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", "-c", 'sleep 1; exec "$@"', "sh"] + sys.argv[1:])
+os.write(fd, b"y\n")
+buf, deadline, answered = b"", time.time() + 15, False
+while time.time() < deadline:
+    if not select.select([fd], [], [], 0.1)[0]:
+        continue
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    buf += chunk
+    if b"Approve? [y/N]" in buf and not answered:
+        answered = True
+        time.sleep(1.5)
+        os.write(fd, b"n\n")
+sys.stdout.buffer.write(buf)
+sys.exit(0 if answered else 3)
+"#;
+    let out = w.command("/usr/bin/python3").env_remove("PLEXUS_WS_TRACE").args(["-I", "-c", py, APPROVE, "--once", "--identity"]).arg(&w.owner).stdout(Stdio::piped()).stderr(Stdio::piped()).output().unwrap();
+    let shown = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "no prompt: {shown} {}", String::from_utf8_lossy(&out.stderr));
+    let events = w.audit_events();
+    assert!(!events.iter().any(|e| e == "fulfill"), "a key typed ahead answered the prompt: {events:?}\n{shown}");
+    assert_eq!(rpc1(&w, "result", json!({"id": id}))["status"], "denied");
 }
