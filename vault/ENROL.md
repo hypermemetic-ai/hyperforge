@@ -11,7 +11,7 @@ Needs `age` and `age-plugin-se` on `PATH`.
 
 ```sh
 mkdir -p ~/.config/vault && chmod 700 ~/.config/vault
-age-plugin-se keygen --access-control=any-biometry -o ~/.config/vault/owner.identity
+age-plugin-se keygen --access-control=current-biometry -o ~/.config/vault/owner.identity
 ```
 
 It prints the recipient, `age1se1…`. The identity file is only a handle: the key
@@ -39,14 +39,26 @@ age1...
 
 `vault-encrypt` warns if this file names only one.
 
-## 4. The server
+## 4. The owner credential and the server
+
+On the Mac, make the credential and print its hash. Only the hash goes to the
+server, and the credential itself never leaves this file:
 
 ```sh
-hyperforge-vault --bind <address> --state-dir /path/to/state
+(umask 077; openssl rand -hex 32 > ~/.config/vault/owner.credential)
+tr -d '\n' < ~/.config/vault/owner.credential | shasum -a 256 | cut -d' ' -f1
+```
+
+On the server, with that hash:
+
+```sh
+hyperforge-vault --bind <address> --state-dir /path/to/state --owner-credential-hash <hash>
 ```
 
 The default bind is `127.0.0.1:4470`. Read "Not yet protected" in the README
-before binding anything wider: the address is the only gate today.
+before binding anything wider. Without `--owner-credential-hash` the server still
+runs, and refuses `get_request`, `fulfill` and `deny` for everyone: no request can
+be answered.
 
 ## 5. Each secret
 
@@ -55,8 +67,13 @@ never passes through `vault-encrypt`:
 
 ```sh
 export VAULT_URL=ws://<address>:4470
+export VAULT_MANIFEST=~/.config/vault/manifest.json
 vault-encrypt npm-token ~/.config/vault/recipients.txt < /path/to/value
 ```
+
+This also records the ciphertext's hash in the manifest, which the approver
+checks before any decrypt. Enrol from the machine that approves: a secret the
+manifest does not hold is refused.
 
 Avoid `echo value | …` in an interactive shell, which leaves it in your history.
 Names are 1 to 64 of `A-Z a-z 0-9 . _ -`, starting with a letter or digit, and
@@ -67,8 +84,13 @@ are never overwritten: see "Rotating a secret" in the README.
 Leave this running on the Mac:
 
 ```sh
-vault-approve --identity ~/.config/vault/owner.identity --server "$VAULT_URL"
+vault-approve --identity ~/.config/vault/owner.identity --server "$VAULT_URL" \
+  --manifest ~/.config/vault/manifest.json \
+  --owner-credential-file ~/.config/vault/owner.credential
 ```
+
+Or add `--once` to handle one request and exit: zero if it was approved or denied,
+non-zero otherwise.
 
 ## 7. Check it
 

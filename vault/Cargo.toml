@@ -41,9 +41,15 @@ name = "e2e"
 path = "tests/e2e.rs"
 required-features = ["server"]
 
+[[test]]
+name = "owner_seam"
+path = "tests/owner_seam.rs"
+required-features = ["server"]
+
 [features]
 default = ["server"]
 server = [
+    "dep:plexus-auth-core",
     "dep:plexus-core",
     "dep:plexus-macros",
     "dep:plexus-transport",
@@ -60,6 +66,7 @@ server = [
 # The client half of plexus; `ws-native` is its WebSocket.
 plexus-client = { version = "0.6", features = ["ws-native"] }
 age = { version = "0.12", features = ["armor"] }
+sha2 = "0.10"
 zeroize = "1"
 libc = "0.2"
 humantime = "2"
@@ -74,6 +81,8 @@ anyhow = "1"
 # from before 0.6.1 was published, so the workspace holds both for now; move
 # these when the workspace moves to the next published line.
 plexus-core = { version = "0.6", optional = true }
+# The namespaced Principal, which plexus-core does not re-export.
+plexus-auth-core = { version = "0.2", optional = true }
 plexus-macros = { version = "0.6", optional = true }
 plexus-transport = { version = "0.5", default-features = false, optional = true }
 # The activation macro's expansion names these two directly.
@@ -87,5 +96,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 
 [dev-dependencies]
 tempfile = "3"
-sha2 = "0.10"
 base64 = "0.22"

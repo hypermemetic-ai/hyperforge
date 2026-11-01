@@ -8,6 +8,7 @@
 //!   the rename that retires it.
 //! - `audit.jsonl`: append-only.
 
+use crate::owner::OwnerProof;
 use crate::wire::*;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
@@ -273,7 +274,7 @@ impl Store {
         Ok(record)
     }
 
-    pub fn get_request(&self, id: &str) -> anyhow::Result<(RequestSummary, String)> {
+    pub fn get_request(&self, _owner: &OwnerProof, id: &str) -> anyhow::Result<(RequestSummary, String)> {
         self.sweep()?;
         let mut inner = self.lock();
         let record = Self::pending_record(&mut inner, id)?;
@@ -281,7 +282,7 @@ impl Store {
         Ok((record.summary.clone(), ciphertext))
     }
 
-    pub fn fulfill(&self, id: &str, sealed: &str) -> anyhow::Result<()> {
+    pub fn fulfill(&self, _owner: &OwnerProof, id: &str, sealed: &str) -> anyhow::Result<()> {
         self.sweep()?;
         if sealed.len() > MAX_CIPHERTEXT || !is_age_format(sealed) {
             bail!("the sealed result is not age format");
@@ -300,7 +301,7 @@ impl Store {
         self.audit(inner, "fulfill", &record.summary.secret, Some(&record.summary))
     }
 
-    pub fn deny(&self, id: &str) -> anyhow::Result<()> {
+    pub fn deny(&self, _owner: &OwnerProof, id: &str) -> anyhow::Result<()> {
         self.sweep()?;
         let mut inner = self.lock();
         let inner = &mut *inner;
@@ -354,9 +355,11 @@ pub mod activation {
     //! The Plexus face of [`super::Store`].
 
     use super::Store;
+    use crate::owner::OwnerGate;
     use crate::wire::*;
     use async_stream::stream;
     use futures::Stream;
+    use plexus_core::plexus::AuthContext;
     use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::broadcast::error::RecvError;
@@ -368,11 +371,18 @@ pub mod activation {
     #[derive(Clone)]
     pub struct VaultActivation {
         store: Arc<Store>,
+        owner: OwnerGate,
     }
 
     impl VaultActivation {
+        /// With no owner: `get_request`, `fulfill` and `deny` refuse everyone
+        /// until [`Self::with_owner`] says otherwise.
         pub fn new(store: Arc<Store>) -> Self {
-            VaultActivation { store }
+            VaultActivation { store, owner: OwnerGate::unconfigured() }
+        }
+
+        pub fn with_owner(self, owner: OwnerGate) -> Self {
+            VaultActivation { owner, ..self }
         }
     }
 
@@ -437,27 +447,27 @@ pub mod activation {
             }
         }
 
-        #[plexus_macros::method(description = "A pending request and its ciphertext, for the approver", params(id = "The request"))]
-        pub async fn get_request(&self, id: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let event = match self.store.get_request(&id) {
+        #[plexus_macros::method(description = "Owner only: a pending request and its ciphertext, for the approver", params(id = "The request"))]
+        pub async fn get_request(&self, auth: Option<&AuthContext>, id: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let event = match self.owner.admit(auth).and_then(|owner| self.store.get_request(&owner, &id)) {
                 Ok((request, ciphertext)) => VaultEvent::Request { request, ciphertext },
                 Err(e) => refused(e),
             };
             stream! { yield event; }
         }
 
-        #[plexus_macros::method(description = "Answer a pending request with the value sealed to its one-time key", params(id = "The request", sealed = "An age file, armored"))]
-        pub async fn fulfill(&self, id: String, sealed: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let event = match self.store.fulfill(&id, &sealed) {
+        #[plexus_macros::method(description = "Owner only: answer a pending request with the value sealed to its one-time key", params(id = "The request", sealed = "An age file, armored"))]
+        pub async fn fulfill(&self, auth: Option<&AuthContext>, id: String, sealed: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let event = match self.owner.admit(auth).and_then(|owner| self.store.fulfill(&owner, &id, &sealed)) {
                 Ok(()) => VaultEvent::Fulfilled { id },
                 Err(e) => refused(e),
             };
             stream! { yield event; }
         }
 
-        #[plexus_macros::method(description = "Refuse a pending request", params(id = "The request"))]
-        pub async fn deny(&self, id: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
-            let event = match self.store.deny(&id) {
+        #[plexus_macros::method(description = "Owner only: refuse a pending request", params(id = "The request"))]
+        pub async fn deny(&self, auth: Option<&AuthContext>, id: String) -> impl Stream<Item = VaultEvent> + Send + 'static {
+            let event = match self.owner.admit(auth).and_then(|owner| self.store.deny(&owner, &id)) {
                 Ok(()) => VaultEvent::Denied { id },
                 Err(e) => refused(e),
             };

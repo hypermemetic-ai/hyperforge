@@ -6,6 +6,7 @@ use futures::StreamExt;
 use plexus_client::{decode, ClientEvent, EventStream, MethodRef, Transport, WsTransport};
 use serde_json::{json, Value};
 use std::io::Read;
+use std::path::Path;
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
@@ -17,6 +18,13 @@ pub struct Rpc {
 impl Rpc {
     pub async fn connect(url: &str) -> anyhow::Result<Rpc> {
         let transport = WsTransport::connect(url, SERVICE).await.map_err(|e| anyhow!("{e}"))?;
+        Ok(Rpc { transport })
+    }
+
+    /// A connection that presents the owner's credential on the upgrade.
+    pub async fn connect_as_owner(url: &str, credential: &str) -> anyhow::Result<Rpc> {
+        let headers = [("Authorization".to_string(), format!("Bearer {credential}"))];
+        let transport = WsTransport::connect_with_headers(url, SERVICE, &headers).await.map_err(|e| anyhow!("{e}"))?;
         Ok(Rpc { transport })
     }
 
@@ -37,6 +45,17 @@ impl Rpc {
             }
         }
     }
+}
+
+/// The owner's credential, from its file. Empty is an error, not an anonymous
+/// approver.
+pub fn read_credential(path: &Path) -> anyhow::Result<Zeroizing<String>> {
+    let text = Zeroizing::new(std::fs::read_to_string(path).with_context(|| format!("reading the owner credential {}", path.display()))?);
+    let credential = Zeroizing::new(text.trim().to_string());
+    if credential.is_empty() {
+        bail!("the owner credential {} is empty", path.display());
+    }
+    Ok(credential)
 }
 
 /// Who is asking, as the caller tells it: the owner sees this, unverified.

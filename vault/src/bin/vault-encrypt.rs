@@ -4,6 +4,7 @@
 use anyhow::{bail, Context};
 use clap::Parser;
 use hyperforge_vault::client::Rpc;
+use hyperforge_vault::manifest;
 use hyperforge_vault::wire::{is_age_format, valid_secret_name};
 use serde_json::json;
 use std::path::PathBuf;
@@ -21,6 +22,9 @@ struct Args {
     /// The age binary.
     #[arg(long, env = "VAULT_AGE", default_value = "age")]
     age: PathBuf,
+    /// The approver's manifest: this ciphertext's hash is recorded here.
+    #[arg(long, env = "VAULT_MANIFEST")]
+    manifest: PathBuf,
 }
 
 #[tokio::main]
@@ -54,6 +58,9 @@ async fn main() -> anyhow::Result<()> {
     }
     let rpc = Rpc::connect(&args.server).await.context("connecting to the vault")?;
     rpc.call("put", json!({"name": args.name, "ciphertext": ciphertext})).await?;
+    // After the server took it: a refused overwrite must not move the entry.
+    manifest::record(&args.manifest, &args.name, &ciphertext)
+        .with_context(|| format!("{} is stored but the approver will refuse it", args.name))?;
     println!("stored {}", args.name);
     Ok(())
 }

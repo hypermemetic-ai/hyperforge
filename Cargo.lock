@@ -1593,6 +1593,7 @@ dependencies = [
  "humantime",
  "jsonrpsee",
  "libc",
+ "plexus-auth-core 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "plexus-client 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "plexus-core 0.6.1",
  "plexus-macros 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",

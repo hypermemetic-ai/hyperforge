@@ -2,9 +2,10 @@
 //! deployment. It announces itself to no registry.
 
 use clap::Parser;
-use plexus_core::plexus::DynamicHub as DynamicService;
+use plexus_core::plexus::{DynamicHub as DynamicService, SessionValidator};
 use plexus_transport::websocket::serve_websocket_with;
 use plexus_transport::{UpgradeOptions, WebSocketConfig};
+use hyperforge_vault::owner::{LocalCredential, OwnerGate};
 use hyperforge_vault::server::{activation::VaultActivation, Store};
 use hyperforge_vault::wire::SERVICE;
 use std::net::{IpAddr, SocketAddr};
@@ -29,20 +30,36 @@ struct Args {
     /// How long a fulfilled result waits for its one read.
     #[arg(long, env = "VAULT_RESULT_TTL_SECS", default_value = "60")]
     result_ttl_secs: u64,
+    /// The sha256, in hex, of the owner's credential. Without it nobody is the
+    /// owner: get_request, fulfill and deny are refused for everyone.
+    #[arg(long, env = "VAULT_OWNER_CREDENTIAL_HASH")]
+    owner_credential_hash: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    // jsonrpsee logs each whole upgrade request at TRACE, Authorization header
+    // and all: whatever RUST_LOG says, the owner's credential stays out of the log.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into())
+        .add_directive("jsonrpsee-server=info".parse()?);
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
     // Everything this process creates is the owner's alone.
     unsafe { libc::umask(0o077) };
 
     let store = Arc::new(Store::open(&args.state_dir, Duration::from_secs(args.request_ttl_secs), Duration::from_secs(args.result_ttl_secs))?);
-    let service = Arc::new(DynamicService::new(SERVICE).register(VaultActivation::new(store.clone())));
+    let (validator, owner): (Option<Arc<dyn SessionValidator>>, OwnerGate) = match &args.owner_credential_hash {
+        Some(hash) => (Some(Arc::new(LocalCredential::from_hex_digest(hash)?)), OwnerGate::owned_by(LocalCredential::principal())),
+        None => {
+            tracing::warn!("no owner configured: get_request, fulfill and deny are refused for everyone");
+            (None, OwnerGate::unconfigured())
+        }
+    };
+    let service = Arc::new(DynamicService::new(SERVICE).register(VaultActivation::new(store.clone()).with_owner(owner)));
     let module = DynamicService::arc_into_rpc_module(service).map_err(|e| anyhow::anyhow!("rpc module: {e}"))?;
 
     let addr = SocketAddr::new(args.bind, args.port);
@@ -51,7 +68,9 @@ async fn main() -> anyhow::Result<()> {
     // No page has business here. An empty list would admit every origin; this
     // one matches none, while a client with no Origin (the tools) proceeds.
     config.allowed_origins = vec!["https://no-browser.invalid".into()];
-    let (handle, bound) = serve_websocket_with(module, config, None, UpgradeOptions::default())
+    // No credential is still a caller (request, result); a bad one is a 401.
+    let upgrade = UpgradeOptions { anonymous_view: true, ..UpgradeOptions::default() };
+    let (handle, bound) = serve_websocket_with(module, config, validator, upgrade)
         .await
         .map_err(|e| anyhow::anyhow!("cannot serve on {addr}: {e}"))?;
     tracing::info!("{SERVICE} on ws://{bound}");

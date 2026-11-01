@@ -2,6 +2,9 @@
 //! out only after its owner approves that one request. See README.md.
 
 pub mod client;
+pub mod manifest;
+#[cfg(feature = "server")]
+pub mod owner;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod wire;

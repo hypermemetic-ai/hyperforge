@@ -6,7 +6,8 @@ use anyhow::{bail, Context};
 use clap::Parser;
 use futures::StreamExt;
 use plexus_client::ClientEvent;
-use hyperforge_vault::client::{fingerprint, Rpc};
+use hyperforge_vault::client::{fingerprint, read_credential, Rpc};
+use hyperforge_vault::manifest;
 use hyperforge_vault::wire::*;
 use serde_json::json;
 use std::collections::HashSet;
@@ -29,6 +30,38 @@ struct Args {
     /// The age binary. age-plugin-se must be on PATH for it.
     #[arg(long, env = "VAULT_AGE", default_value = "age")]
     age: PathBuf,
+    /// The name-to-hash manifest vault-encrypt writes. A ciphertext it does
+    /// not match is never decrypted.
+    #[arg(long, env = "VAULT_MANIFEST")]
+    manifest: PathBuf,
+    /// A file holding the owner's credential.
+    #[arg(long, env = "VAULT_OWNER_CREDENTIAL_FILE")]
+    owner_credential_file: PathBuf,
+    /// Handle one pending request, waiting for one if need be, and exit: zero
+    /// if it was approved or denied, otherwise non-zero. No reconnecting.
+    #[arg(long)]
+    once: bool,
+}
+
+/// How one request ended.
+enum Outcome {
+    Approved,
+    Denied,
+    /// Refused for the owner: it did not match, or it would not decrypt.
+    Refused,
+    /// Stdin ended at the prompt: nothing was answered.
+    NoAnswer,
+}
+
+impl Outcome {
+    /// What `--once` exits with.
+    fn finish(self) -> anyhow::Result<()> {
+        match self {
+            Outcome::Approved | Outcome::Denied => Ok(()),
+            Outcome::Refused => bail!("the request was refused, not sealed"),
+            Outcome::NoAnswer => bail!("no answer"),
+        }
+    }
 }
 
 fn stamp(ms: u64) -> String {
@@ -53,7 +86,8 @@ fn notify(title: &str, body: &str) {
 }
 
 /// Discards anything typed before the question was on screen: a stray `y`
-/// must not answer a request its owner has not read.
+/// must not answer a request its owner has not read. After the prompt is out
+/// and before the first read, so nothing typed before it can get through.
 fn drop_typeahead() {
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
@@ -66,6 +100,7 @@ fn drop_typeahead() {
 fn ask() -> anyhow::Result<Option<bool>> {
     print!("Approve? [y/N] ");
     std::io::stdout().flush()?;
+    drop_typeahead();
     let mut line = String::new();
     if std::io::stdin().lock().read_line(&mut line)? == 0 {
         return Ok(None);
@@ -121,8 +156,8 @@ async fn reseal(age: &Path, identity: &Path, ciphertext: String, key: &str) -> a
     Ok(String::from_utf8(sealed.stdout).context("age's armored output is not text")?)
 }
 
-/// Shows one request and acts on the answer. `Ok(false)`: stdin is finished.
-async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Result<bool> {
+/// Shows one request and acts on the answer.
+async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Result<Outcome> {
     let secret = printable(&request.secret, 64);
     let purpose = printable(&request.purpose, MAX_PURPOSE);
     let caller = printable(&request.caller, MAX_CALLER);
@@ -135,13 +170,12 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
     println!("  caller:  {caller}   [claimed by the caller]");
     println!("  time:    {} (expires {})", stamp(request.created_at), stamp(request.expires_at));
     println!("  key:     …{}", fingerprint(&key));
-    drop_typeahead();
     let answer = tokio::task::spawn_blocking(ask).await.context("the prompt")??;
-    let Some(yes) = answer else { return Ok(false) };
+    let Some(yes) = answer else { return Ok(Outcome::NoAnswer) };
     if !yes {
         rpc.call("deny", json!({"id": request.id})).await?;
         println!("denied");
-        return Ok(true);
+        return Ok(Outcome::Denied);
     }
     // Fetched only now: it may have lapsed under the prompt, and then there is
     // no reason for Touch ID to fire.
@@ -153,10 +187,19 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
     if fresh != *request {
         bail!("the request changed under the prompt; nothing was decrypted");
     }
+    // The approval was for this name's secret, whatever the server serves. No
+    // Touch ID fires for bytes the manifest does not know.
+    if let Err(e) = manifest::verify(&args.manifest, &request.secret, &ciphertext) {
+        eprintln!("refused, nothing decrypted: {e:#}");
+        rpc.call("deny", json!({"id": request.id})).await?;
+        println!("denied");
+        return Ok(Outcome::Refused);
+    }
     match reseal(&args.age, &args.identity, ciphertext, &request.one_time_pubkey).await {
         Ok(sealed) => {
             rpc.call("fulfill", json!({"id": request.id, "sealed": sealed})).await?;
             println!("approved and sealed");
+            Ok(Outcome::Approved)
         }
         // A cancelled Touch ID, a key that does not fit: the answer is no, and
         // the caller should not sit out the timeout.
@@ -164,14 +207,14 @@ async fn handle(args: &Args, rpc: &Rpc, request: &RequestSummary) -> anyhow::Res
             eprintln!("not sealed: {e:#}");
             rpc.call("deny", json!({"id": request.id})).await?;
             println!("denied");
+            Ok(Outcome::Refused)
         }
     }
-    Ok(true)
 }
 
-/// One connection's life. `Ok`: stdin ended, stop. `Err`: reconnect.
-async fn session(args: &Args, seen: &mut HashSet<String>) -> anyhow::Result<()> {
-    let rpc = Rpc::connect(&args.server).await?;
+/// One connection's life. `Ok`: stop. `Err`: reconnect, or under `--once`, exit.
+async fn session(args: &Args, credential: &str, seen: &mut HashSet<String>) -> anyhow::Result<()> {
+    let rpc = Rpc::connect_as_owner(&args.server, credential).await?;
     println!("watching {}", args.server);
     let mut events = rpc.stream("watch", json!({}));
     while let Some(event) = events.next().await {
@@ -184,8 +227,10 @@ async fn session(args: &Args, seen: &mut HashSet<String>) -> anyhow::Result<()> 
                     continue;
                 }
                 match handle(args, &rpc, &request).await {
-                    Ok(true) => {}
-                    Ok(false) => return Ok(()),
+                    Ok(outcome) if args.once => return outcome.finish(),
+                    Err(e) if args.once => return Err(e),
+                    Ok(Outcome::NoAnswer) => return Ok(()),
+                    Ok(_) => {}
                     Err(e) => eprintln!("request {}: {e:#}", printable(&request.id, 40)),
                 }
             }
@@ -203,10 +248,12 @@ async fn main() -> anyhow::Result<()> {
     if !args.identity.exists() {
         bail!("no identity at {}", args.identity.display());
     }
+    let credential = read_credential(&args.owner_credential_file)?;
     let mut seen = HashSet::new();
     loop {
-        match session(&args, &mut seen).await {
+        match session(&args, &credential, &mut seen).await {
             Ok(()) => return Ok(()),
+            Err(e) if args.once => return Err(e),
             Err(e) => {
                 eprintln!("disconnected: {e:#}; retrying");
                 tokio::time::sleep(Duration::from_secs(2)).await;
