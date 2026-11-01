@@ -131,5 +131,6 @@ fn the_library_takes_no_cli_types_and_reads_no_home() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 8);
+    // Not an exact count: this is about every file, whichever ones there are.
+    assert!(checked >= 8, "{checked}");
 }
