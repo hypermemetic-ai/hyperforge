@@ -9,10 +9,11 @@ use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use plexus_client::ClientEvent;
-use hyperforge_vault::client::{fingerprint, read_credential, Rpc};
+use hyperforge_vault::client::{fingerprint, Rpc};
+use hyperforge_vault::login::{Login, WorkosArgs};
 use hyperforge_vault::{keys, manifest};
 use hyperforge_vault::wire::*;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
@@ -41,9 +42,8 @@ struct Args {
     /// not match is never decrypted.
     #[arg(long, env = "VAULT_MANIFEST", required = true)]
     manifest: Option<PathBuf>,
-    /// A file holding the owner's credential.
-    #[arg(long, env = "VAULT_OWNER_CREDENTIAL_FILE", required = true)]
-    owner_credential_file: Option<PathBuf>,
+    #[command(flatten)]
+    workos: WorkosArgs,
     /// Handle one pending request, waiting for one if need be, and exit: zero
     /// if it was approved or denied, otherwise non-zero. No reconnecting.
     #[arg(long)]
@@ -94,7 +94,7 @@ struct Watch {
     identity: PathBuf,
     server: String,
     manifest: PathBuf,
-    owner_credential_file: PathBuf,
+    workos: WorkosArgs,
     once: bool,
     require_memory_lock: bool,
 }
@@ -164,8 +164,17 @@ fn ask() -> anyhow::Result<Option<bool>> {
     Ok(Some(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")))
 }
 
+/// One call on its own connection, with a token good for now. The watch's
+/// socket closes when its token ends, which can be under the prompt or during
+/// Touch ID; an answer the owner has given must not go down with it.
+async fn owner_call(args: &Watch, login: &Login, method: &'static str, params: Value) -> anyhow::Result<VaultEvent> {
+    let token = login.token().await?;
+    let rpc = Rpc::connect(&args.server, &token).await?;
+    rpc.call(method, params).await
+}
+
 /// Shows one request and acts on the answer.
-async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Result<Outcome> {
+async fn handle(args: &Watch, login: &Login, request: &RequestSummary) -> anyhow::Result<Outcome> {
     let secret = printable(&request.secret, 64);
     let purpose = printable(&request.purpose, MAX_PURPOSE);
     let caller = printable(&request.caller, MAX_CALLER);
@@ -181,13 +190,13 @@ async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Re
     let answer = tokio::task::spawn_blocking(ask).await.context("the prompt")??;
     let Some(yes) = answer else { return Ok(Outcome::NoAnswer) };
     if !yes {
-        rpc.call("deny", json!({"id": request.id})).await?;
+        owner_call(args, login, "deny", json!({"id": request.id})).await?;
         println!("denied");
         return Ok(Outcome::Denied);
     }
     // Fetched only now: it may have lapsed under the prompt, and then there is
     // no reason for Touch ID to fire.
-    let (fresh, ciphertext) = match rpc.call("get_request", json!({"id": request.id})).await? {
+    let (fresh, ciphertext) = match owner_call(args, login, "get_request", json!({"id": request.id})).await? {
         VaultEvent::Request { request, ciphertext } => (request, ciphertext),
         other => bail!("unexpected answer: {other:?}"),
     };
@@ -199,7 +208,7 @@ async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Re
     // Touch ID fires for bytes the manifest does not know.
     if let Err(e) = manifest::verify(&args.manifest, &request.secret, &ciphertext) {
         eprintln!("refused, nothing decrypted: {e:#}");
-        rpc.call("deny", json!({"id": request.id})).await?;
+        owner_call(args, login, "deny", json!({"id": request.id})).await?;
         println!("denied");
         return Ok(Outcome::Refused);
     }
@@ -208,7 +217,7 @@ async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Re
     let sealed = sealed.and_then(|sealed| platform::check_locks(args.require_memory_lock).map(|()| sealed));
     match sealed {
         Ok(sealed) => {
-            rpc.call("fulfill", json!({"id": request.id, "sealed": sealed})).await?;
+            owner_call(args, login, "fulfill", json!({"id": request.id, "sealed": sealed})).await?;
             println!("approved and sealed");
             Ok(Outcome::Approved)
         }
@@ -216,7 +225,7 @@ async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Re
         // the caller should not sit out the timeout.
         Err(e) => {
             eprintln!("not sealed: {e:#}");
-            rpc.call("deny", json!({"id": request.id})).await?;
+            owner_call(args, login, "deny", json!({"id": request.id})).await?;
             println!("denied");
             Ok(Outcome::Refused)
         }
@@ -224,8 +233,10 @@ async fn handle(args: &Watch, rpc: &Rpc, request: &RequestSummary) -> anyhow::Re
 }
 
 /// One connection's life. `Ok`: stop. `Err`: reconnect, or under `--once`, exit.
-async fn session(args: &Watch, credential: &str, seen: &mut HashSet<String>) -> anyhow::Result<()> {
-    let rpc = Rpc::connect_as_owner(&args.server, credential).await?;
+async fn session(args: &Watch, login: &Login, seen: &mut HashSet<String>) -> anyhow::Result<()> {
+    // Asked for afresh on every reconnect: the socket ends with its token.
+    let token = login.token().await?;
+    let rpc = Rpc::connect(&args.server, &token).await?;
     println!("watching {}", args.server);
     let mut events = rpc.stream("watch", json!({}));
     while let Some(event) = events.next().await {
@@ -237,7 +248,7 @@ async fn session(args: &Watch, credential: &str, seen: &mut HashSet<String>) -> 
                 if request.expires_at <= now_ms() {
                     continue;
                 }
-                match handle(args, &rpc, &request).await {
+                match handle(args, login, &request).await {
                     Ok(outcome) if args.once => return outcome.finish(),
                     Err(e) if args.once => return Err(e),
                     Ok(Outcome::NoAnswer) => return Ok(()),
@@ -291,17 +302,17 @@ async fn main() -> anyhow::Result<()> {
         }
         None => platform::require_or_warn(locked, args.require_memory_lock)?,
     }
-    let (Some(identity), Some(manifest), Some(owner_credential_file)) = (args.identity, args.manifest, args.owner_credential_file) else {
-        bail!("--identity, --manifest and --owner-credential-file are required");
+    let (Some(identity), Some(manifest)) = (args.identity, args.manifest) else {
+        bail!("--identity and --manifest are required");
     };
-    let args = Watch { identity, server: args.server, manifest, owner_credential_file, once: args.once, require_memory_lock: args.require_memory_lock };
+    let args = Watch { identity, server: args.server, manifest, workos: args.workos, once: args.once, require_memory_lock: args.require_memory_lock };
     if !args.identity.exists() {
         bail!("no identity at {}", args.identity.display());
     }
-    let credential = read_credential(&args.owner_credential_file)?;
+    let login = args.workos.login()?;
     let mut seen = HashSet::new();
     loop {
-        match session(&args, &credential, &mut seen).await {
+        match session(&args, &login, &mut seen).await {
             Ok(()) => return Ok(()),
             Err(e) if args.once => return Err(e),
             Err(e) => {

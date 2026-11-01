@@ -3,6 +3,7 @@
 
 pub mod client;
 pub mod keys;
+pub mod login;
 pub mod manifest;
 #[cfg(feature = "server")]
 pub mod owner;

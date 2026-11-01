@@ -111,6 +111,6 @@ fn the_library_sets_no_process_policy() {
             checked += 1;
         }
     }
-    // client, keys, lib, manifest, owner, server, wire.
-    assert_eq!(checked, 7);
+    // client, keys, lib, login, manifest, owner, server, wire.
+    assert_eq!(checked, 8);
 }

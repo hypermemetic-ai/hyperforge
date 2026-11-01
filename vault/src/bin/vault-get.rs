@@ -5,7 +5,8 @@ mod platform;
 
 use anyhow::bail;
 use clap::Parser;
-use hyperforge_vault::client::{default_caller, fetch, Ask};
+use std::path::PathBuf;
+use hyperforge_vault::client::{default_caller, fetch, read_credential, Ask};
 use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
@@ -20,6 +21,9 @@ struct Args {
     /// Print even though stdout is a terminal, where it stays in the scrollback.
     #[arg(long)]
     allow_terminal: bool,
+    /// A file holding this machine's vault credential.
+    #[arg(long, env = "VAULT_CREDENTIAL_FILE")]
+    credential_file: PathBuf,
     #[arg(long, env = "VAULT_URL", default_value = "ws://127.0.0.1:4470")]
     server: String,
     /// Who is asking, as shown to the owner (default: user@host).
@@ -42,7 +46,9 @@ async fn main() -> anyhow::Result<()> {
         bail!("stdout is a terminal; pipe it, or pass --allow-terminal");
     }
     let caller = args.caller.clone().unwrap_or_else(default_caller);
+    let credential = read_credential(&args.credential_file)?;
     let value = fetch(Ask {
+        credential: &credential,
         url: &args.server,
         secret: &args.secret,
         purpose: &args.purpose,
