@@ -1,4 +1,5 @@
 //! `build::chain` — HYPERFORGE-23: a crate chain across a workspace's repos.
+//! HYPERFORGE-26: a repo's root `.cabal` package is in the chain too.
 //!
 //! Discovery (each repo's cargo workspace and its members), dependency
 //! order, crates.io's state of each crate, bumps that carry every
@@ -36,8 +37,29 @@ pub struct DepRef {
     pub req: Option<String>,
 }
 
+/// Which registry a chain package belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageKind {
+    /// crates.io, by `cargo publish`.
+    Cargo,
+    /// Hackage, by `cabal upload --publish`.
+    Cabal,
+}
+
+impl PackageKind {
+    /// The registry's name, as an operator reads it.
+    #[must_use]
+    pub const fn registry(self) -> &'static str {
+        match self {
+            Self::Cargo => "crates.io",
+            Self::Cabal => "Hackage",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CrateNode {
+    pub kind: PackageKind,
     pub name: String,
     pub version: String,
     /// The version comes from `[workspace.package]` (`version.workspace = true`).
@@ -55,6 +77,23 @@ pub struct CrateNode {
     pub deps: Vec<DepRef>,
 }
 
+impl CrateNode {
+    /// The repo's own name: `plexus-synapse` lives in `hypermemetic/synapse`.
+    #[must_use]
+    pub fn repo_name(&self) -> &str {
+        self.repo.rsplit('/').next().unwrap_or(&self.repo)
+    }
+
+    /// Does any glob name this package? A Cabal package answers to its
+    /// repo's name as well, where the two commonly differ.
+    fn named_by(&self, patterns: &[String]) -> bool {
+        patterns.iter().any(|p| {
+            glob_match(p, &self.name)
+                || (self.kind == PackageKind::Cabal && glob_match(p, self.repo_name()))
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Chain {
     pub crates: Vec<CrateNode>,
@@ -70,9 +109,11 @@ impl Chain {
     }
 }
 
-/// Read every repo's cargo crates: the root package, the workspace's
-/// members (literal paths and `dir/*` globs, less `exclude`), each member's
-/// package. A repo with no Cargo.toml contributes nothing.
+/// Read every repo's packages.
+///
+/// Its cargo crates: the root package, the workspace's members (literal
+/// paths and `dir/*` globs, less `exclude`), each member's package; and its
+/// root `.cabal` package. A repo with neither contributes nothing.
 #[must_use]
 pub fn discover(repos: &[(String, PathBuf)]) -> Chain {
     let mut chain = Chain::default();
@@ -80,6 +121,7 @@ pub fn discover(repos: &[(String, PathBuf)]) -> Chain {
         if let Err(e) = discover_repo(&mut chain, repo, dir) {
             chain.warnings.push(format!("{repo}: {e}"));
         }
+        discover_cabal(&mut chain, repo, dir);
     }
     let mut seen: HashMap<String, String> = HashMap::new();
     for c in &chain.crates {
@@ -91,6 +133,39 @@ pub fn discover(repos: &[(String, PathBuf)]) -> Chain {
         }
     }
     chain
+}
+
+/// The `.cabal` package at a repo's root. A test-suite's dependencies count
+/// as the library's: `build-depends` is read without its stanzas.
+fn discover_cabal(chain: &mut Chain, repo: &str, dir: &Path) {
+    use crate::build_system::cabal;
+    let Some(manifest) = cabal::find_cabal_file(dir) else { return };
+    let (Some(name), Some(version)) = (cabal::cabal_package_name(dir), cabal::cabal_package_version(dir)) else {
+        chain.warnings.push(format!("{repo}: {}: no name or no version", manifest.display()));
+        return;
+    };
+    let deps = cabal::parse_cabal_deps(dir)
+        .into_iter()
+        .map(|d| DepRef {
+            // `pkg:sublib` needs `pkg`.
+            package: d.name.split(':').next().unwrap_or(&d.name).to_string(),
+            kind: DepKind::Normal,
+            req: d.version_req,
+        })
+        .collect();
+    chain.crates.push(CrateNode {
+        kind: PackageKind::Cabal,
+        name,
+        version,
+        version_inherited: false,
+        dir: dir.to_path_buf(),
+        manifest,
+        repo: repo.to_string(),
+        repo_dir: dir.to_path_buf(),
+        ws_root: dir.to_path_buf(),
+        publish: true,
+        deps,
+    });
 }
 
 fn read_toml(path: &Path) -> Result<toml::Value, String> {
@@ -263,6 +338,7 @@ fn package_node(
         }
     }
     Ok(CrateNode {
+        kind: PackageKind::Cargo,
         name,
         version,
         version_inherited,
@@ -305,7 +381,8 @@ fn dep_entry(
 // Selection and order.
 // ======================================================================
 
-/// The crates `include` names (globs on the crate name), and their closure.
+/// The crates `include` names (globs on the crate name; a Cabal package's
+/// repo name serves too), and their closure.
 ///
 /// With `closure`, every chain crate they need (normal, build, and dev
 /// dependencies that carry a version: crates.io holds those too), less
@@ -320,15 +397,17 @@ pub fn select(
         return Err("include is required: name the crates (globs on crate names)".into());
     }
     let mut notes = Vec::new();
-    let excluded = |name: &str| exclude.iter().any(|p| glob_match(p, name));
     let mut picked: BTreeSet<usize> = BTreeSet::new();
     for (i, c) in chain.crates.iter().enumerate() {
-        if include.iter().any(|p| glob_match(p, &c.name)) && !excluded(&c.name) {
+        if c.named_by(include) && !c.named_by(exclude) {
             if chain.index_of(&c.name) != Some(i) {
                 continue; // a second crate of that name
             }
             if c.publish {
                 picked.insert(i);
+                if !include.iter().any(|p| glob_match(p, &c.name)) {
+                    notes.push(format!("include {}: the repo of {}", c.repo_name(), c.name));
+                }
             } else {
                 notes.push(format!("{} is publish = false — left out", c.name));
             }
@@ -346,7 +425,7 @@ pub fn select(
                 }
                 let Some(j) = chain.index_of(&d.package) else { continue };
                 let dep = &chain.crates[j];
-                if picked.contains(&j) || excluded(&dep.name) {
+                if picked.contains(&j) || dep.named_by(exclude) {
                     continue;
                 }
                 if !dep.publish {
@@ -365,8 +444,10 @@ pub fn select(
     Ok((picked.into_iter().collect(), notes))
 }
 
-/// The selected crates in dependency order, grouped: consecutive crates
-/// of one cargo workspace form a group (one `cargo publish -p … -p …`).
+/// The selected crates in dependency order, grouped.
+///
+/// Consecutive crates of one cargo workspace form a group (one `cargo
+/// publish -p … -p …`); a Cabal package is a group of its own.
 /// Dev-dependency edges count unless they make a cycle.
 pub fn order(chain: &Chain, sel: &[usize]) -> Result<Vec<Vec<usize>>, String> {
     match order_with(chain, sel, true) {
@@ -420,7 +501,13 @@ fn order_with(chain: &Chain, sel: &[usize], dev: bool) -> Result<Vec<Vec<usize>>
     let mut groups: Vec<Vec<usize>> = Vec::new();
     for i in flat {
         match groups.last_mut() {
-            Some(g) if chain.crates[g[0]].ws_root == chain.crates[i].ws_root => g.push(i),
+            Some(g)
+                if chain.crates[i].kind == PackageKind::Cargo
+                    && chain.crates[g[0]].kind == PackageKind::Cargo
+                    && chain.crates[g[0]].ws_root == chain.crates[i].ws_root =>
+            {
+                g.push(i);
+            }
             _ => groups.push(vec![i]),
         }
     }
@@ -711,6 +798,29 @@ pub fn registry_status(local: &str, published: &[Published]) -> (&'static str, O
     (if behind { "behind" } else { "ahead" }, latest)
 }
 
+/// [`registry_status`] for PVP versions, Hackage's `0.5.5.0`, which semver
+/// does not read.
+#[must_use]
+pub fn pvp_status(local: &str, published: &[Published]) -> (&'static str, Option<String>) {
+    use crate::build_system::version::compare_versions;
+    use std::cmp::Ordering;
+    let cmp = |a: &str, b: &str| compare_versions(a, b).unwrap_or(Ordering::Equal);
+    let latest = published
+        .iter()
+        .filter(|p| !p.yanked)
+        .map(|p| p.version.as_str())
+        .max_by(|a, b| cmp(a, b))
+        .map(str::to_string);
+    if published.is_empty() {
+        return ("unpublished", None);
+    }
+    if let Some(p) = published.iter().find(|p| p.version == local) {
+        return (if p.yanked { "yanked" } else { "published" }, latest);
+    }
+    let behind = latest.as_deref().is_some_and(|m| cmp(local, m) == Ordering::Less);
+    (if behind { "behind" } else { "ahead" }, latest)
+}
+
 // ======================================================================
 // Drift: has the source changed since the published version?
 // ======================================================================
@@ -723,8 +833,10 @@ pub struct Drift {
     pub published_from: Option<String>,
 }
 
-/// Compare a published `.crate` against the crate's directory: every file
-/// the package carries, `Cargo.toml.orig` against the local Cargo.toml;
+/// Compare a published package against the crate's directory.
+///
+/// A `.crate`, or a Hackage sdist (the same `<name>-<version>/<rel>`
+/// tarball): every file the package carries, `Cargo.toml.orig` against the local Cargo.toml;
 /// files git ignores here (a build's output) are not counted.
 pub fn drift(crate_bytes: &[u8], dir: &Path) -> Result<Drift, String> {
     let gz = flate2::read::GzDecoder::new(crate_bytes);
@@ -1018,6 +1130,43 @@ mod tests {
             b.append_data(&mut h, format!("{prefix}/{name}"), body.as_bytes()).unwrap();
         }
         b.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn a_cabal_package_at_a_repos_root_joins_the_chain() {
+        let t = tempfile::tempdir().unwrap();
+        let mut repos = fixture(t.path());
+        // A repo with both: its Cargo crates and its Cabal package stay apart.
+        write(
+            &t.path().join("core/m-ffi.cabal"),
+            "cabal-version: 3.0\nName: m-ffi\nVersion: 0.5.5.0\n\nlibrary\n  build-depends: base, m-hs:sub >= 1\n",
+        );
+        write(&t.path().join("hs/m-hs.cabal"), "name: m-hs\nversion: 1.0\n");
+        repos.push(("o/hs".into(), t.path().join("hs")));
+        let chain = discover(&repos);
+        let ffi = &chain.crates[chain.index_of("m-ffi").unwrap()];
+        assert_eq!(ffi.kind, PackageKind::Cabal);
+        assert_eq!(ffi.version, "0.5.5.0");
+        assert!(ffi.deps.iter().any(|d| d.package == "m-hs"));
+        // Adjacent, in one directory, they are still two groups.
+        let (sel, _) = select(&chain, &["m-core".into(), "m-ffi".into()], &[], false).unwrap();
+        let g: Vec<Vec<String>> = order(&chain, &sel).unwrap().iter().map(|g| names(&chain, g)).collect();
+        assert_eq!(g, vec![vec!["m-core".to_string()], vec!["m-ffi".into()]]);
+        // The closure follows build-depends: m-hs before m-ffi.
+        let (sel, _) = select(&chain, &["m-ffi".into()], &[], true).unwrap();
+        let g: Vec<Vec<String>> = order(&chain, &sel).unwrap().iter().map(|g| names(&chain, g)).collect();
+        assert_eq!(g, vec![vec!["m-hs".to_string()], vec!["m-ffi".into()]]);
+    }
+
+    #[test]
+    fn pvp_status_reads_four_part_versions() {
+        let held = |v: &str, yanked| Published { version: v.into(), yanked };
+        let p = [held("0.5.2.0", false), held("0.5.10.0", false), held("0.6.0.0", true)];
+        assert_eq!(pvp_status("0.5.2.0", &p), ("published", Some("0.5.10.0".into())));
+        assert_eq!(pvp_status("0.6.0.0", &p).0, "yanked");
+        assert_eq!(pvp_status("0.5.11.0", &p).0, "ahead");
+        assert_eq!(pvp_status("0.5.5.0", &p).0, "behind");
+        assert_eq!(pvp_status("3.15", &[]).0, "unpublished");
     }
 
     #[test]

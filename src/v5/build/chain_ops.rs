@@ -5,6 +5,10 @@
 //! then each group in dependency order. Each runs as a task sending its
 //! events, so a long publish outlives a dropped client rather than
 //! stopping half-way.
+//!
+//! HYPERFORGE-26: Cabal packages take the same road to Hackage, each its own
+//! group; [`crate::package::hackage::HackageClient`] is the registry and the
+//! `cabal` commands.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -12,7 +16,8 @@ use std::process::Stdio;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::chain::{self, Chain, Registry};
+use super::chain::{self, Chain, CrateNode, PackageKind, Published, Registry};
+use crate::package::hackage::HackageClient;
 use crate::v5::build_service::BuildEvent;
 
 type Tx = UnboundedSender<BuildEvent>;
@@ -58,6 +63,37 @@ fn dirty(repo_dir: &Path, path: &Path) -> Result<Vec<String>, String> {
     Ok(out.lines().map(str::to_string).collect())
 }
 
+/// Each package's registry.
+struct Registries {
+    crates: Registry,
+    hackage: HackageClient,
+}
+
+impl Registries {
+    fn from_env() -> Self {
+        Self { crates: Registry::from_env(), hackage: HackageClient::new() }
+    }
+
+    async fn published(&self, c: &CrateNode) -> Result<Vec<Published>, String> {
+        match c.kind {
+            PackageKind::Cargo => self.crates.published(&c.name).await,
+            PackageKind::Cabal => {
+                let v = self.hackage.versions(&c.name).await.map_err(|e| e.to_string())?;
+                let held = v.held.into_iter().map(|version| Published { version, yanked: false });
+                let deprecated = v.deprecated.into_iter().map(|version| Published { version, yanked: true });
+                Ok(held.chain(deprecated).collect())
+            }
+        }
+    }
+
+    async fn download(&self, c: &CrateNode) -> Result<Option<Vec<u8>>, String> {
+        match c.kind {
+            PackageKind::Cargo => self.crates.download(&c.name, &c.version).await,
+            PackageKind::Cabal => self.hackage.download(&c.name, &c.version).await.map_err(|e| e.to_string()),
+        }
+    }
+}
+
 fn discover_selected(
     tx: &Tx,
     repos: &[(String, PathBuf)],
@@ -95,22 +131,25 @@ pub async fn package_diff(
 ) {
     let include = if include.is_empty() { vec!["*".to_string()] } else { include };
     let Some((chain, sel)) = discover_selected(&tx, &repos, &include, &exclude, false) else { return };
-    let registry = Registry::from_env();
+    let registry = Registries::from_env();
     let order = chain::order(&chain, &sel).unwrap_or_else(|_| vec![sel.clone()]);
     for &i in order.iter().flatten() {
         let c = &chain.crates[i];
-        let published = match registry.published(&c.name).await {
+        let published = match registry.published(c).await {
             Ok(p) => p,
             Err(e) => {
                 err(&tx, "registry", format!("{}: {e}", c.name));
                 continue;
             }
         };
-        let (mut status, latest) = chain::registry_status(&c.version, &published);
+        let (mut status, latest) = match c.kind {
+            PackageKind::Cargo => chain::registry_status(&c.version, &published),
+            PackageKind::Cabal => chain::pvp_status(&c.version, &published),
+        };
         let mut changed = Vec::new();
         let mut published_from = None;
         if status == "published" || status == "yanked" {
-            match registry.download(&c.name, &c.version).await {
+            match registry.download(c).await {
                 Ok(Some(bytes)) => match chain::drift(&bytes, &c.dir) {
                     Ok(d) => {
                         if !d.changed.is_empty() && status == "published" {
@@ -119,9 +158,9 @@ pub async fn package_diff(
                         changed = d.changed;
                         published_from = d.published_from;
                     }
-                    Err(e) => note(&tx, format!("{}: could not read its .crate: {e}", c.name)),
+                    Err(e) => note(&tx, format!("{}: could not read its package: {e}", c.name)),
                 },
-                Ok(None) => note(&tx, format!("{} {}: no .crate to compare", c.name, c.version)),
+                Ok(None) => note(&tx, format!("{} {}: no package to compare", c.name, c.version)),
                 Err(e) => note(&tx, format!("{}: {e}", c.name)),
             }
         }
@@ -167,6 +206,17 @@ pub async fn bump(tx: Tx, a: BumpArgs) {
         text: String,
     }
     let Some((chain, sel)) = discover_selected(&tx, &a.repos, &a.include, &a.exclude, a.closure) else { return };
+    // HYPERFORGE-26: a .cabal file is not bumped here. Asked for outright that
+    // is refused; caught by a glob beside cargo crates, it is named and left.
+    let (cabal, sel): (Vec<usize>, Vec<usize>) = sel.into_iter().partition(|&i| chain.crates[i].kind == PackageKind::Cabal);
+    if !cabal.is_empty() {
+        let names: Vec<&str> = cabal.iter().map(|&i| chain.crates[i].name.as_str()).collect();
+        let message = format!("{}: bump does not edit .cabal files; set its version by hand", names.join(", "));
+        if sel.is_empty() {
+            return err(&tx, "unsupported", message);
+        }
+        note(&tx, message);
+    }
     // New versions.
     let mut bumped: HashMap<String, (String, String)> = HashMap::new();
     let mut set_manifests: HashMap<PathBuf, (usize, String)> = HashMap::new();
@@ -333,11 +383,14 @@ pub struct PublishArgs {
     pub closure: bool,
     pub execute: bool,
     pub token: Option<String>,
+    /// What the secret store holds at `hackage/token`.
+    pub hackage_secret: Option<String>,
     pub log_dir: PathBuf,
 }
 
 struct Group {
     n: u32,
+    kind: PackageKind,
     repo: String,
     repo_dir: PathBuf,
     ws_root: PathBuf,
@@ -351,8 +404,8 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         Ok(o) => o,
         Err(e) => return err(&tx, "cycle", e),
     };
-    // The plan: a version crates.io holds is skipped.
-    let registry = Registry::from_env();
+    // The plan: a version its registry holds is skipped.
+    let registry = Registries::from_env();
     let mut groups: Vec<Group> = Vec::new();
     let mut position = 0u32;
     let mut skipped = 0u32;
@@ -360,6 +413,7 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         let first = &chain.crates[g[0]];
         let mut group = Group {
             n: u32::try_from(gi + 1).unwrap_or(u32::MAX),
+            kind: first.kind,
             repo: first.repo.clone(),
             repo_dir: first.repo_dir.clone(),
             ws_root: first.ws_root.clone(),
@@ -369,10 +423,10 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         for &i in g {
             let c = &chain.crates[i];
             position += 1;
-            let (action, reason) = match registry.published(&c.name).await {
+            let (action, reason) = match registry.published(c).await {
                 Ok(p) if p.iter().any(|v| v.version == c.version) => {
                     skipped += 1;
-                    ("skip", Some(format!("crates.io holds {} {}", c.name, c.version)))
+                    ("skip", Some(format!("{} holds {} {}", c.kind.registry(), c.name, c.version)))
                 }
                 Ok(_) => {
                     group.crates.push(i);
@@ -391,6 +445,10 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
             });
         }
         if group.crates.is_empty() {
+            continue;
+        }
+        if group.kind == PackageKind::Cabal {
+            groups.push(group);
             continue;
         }
         match chain::read_publish_step(&group.repo_dir) {
@@ -413,7 +471,7 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
     }
     let planned = u32::try_from(groups.iter().map(|g| g.crates.len()).sum::<usize>()).unwrap_or(u32::MAX);
     if groups.is_empty() {
-        note(&tx, "every selected crate's version is on crates.io already — bump first");
+        note(&tx, "every selected package's version is on its registry already — bump first");
         return send(&tx, summary(a.execute, planned, skipped, 0, vec![], vec![], vec![]));
     }
     // An execute publishes commits, never a working tree.
@@ -437,11 +495,11 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         return err(&tx, "io", format!("{}: {e}", a.log_dir.display()));
     }
     // 1. Every group's dry run, each against the others' checkouts.
-    let to_publish: Vec<(String, PathBuf, PathBuf)> = groups
+    let to_publish: Vec<(String, PathBuf, PathBuf, PackageKind)> = groups
         .iter()
         .flat_map(|g| g.crates.iter().map(|&i| {
             let c = &chain.crates[i];
-            (c.name.clone(), c.dir.clone(), c.ws_root.clone())
+            (c.name.clone(), c.dir.clone(), c.ws_root.clone(), c.kind)
         }))
         .collect();
     let mut verified = 0u32;
@@ -449,10 +507,10 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
     for g in &groups {
         let patch: Vec<(String, PathBuf)> = to_publish
             .iter()
-            .filter(|(_, _, ws)| *ws != g.ws_root)
-            .map(|(n, d, _)| (n.clone(), d.clone()))
+            .filter(|(_, _, ws, kind)| *kind == PackageKind::Cargo && *ws != g.ws_root)
+            .map(|(n, d, _, _)| (n.clone(), d.clone()))
             .collect();
-        let patch_file = if patch.is_empty() {
+        let patch_file = if patch.is_empty() || g.kind == PackageKind::Cabal {
             None
         } else {
             let p = a.log_dir.join(format!("{:02}-patch.toml", g.n));
@@ -467,7 +525,7 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
             failed.extend(g.crates.iter().map(|&i| chain.crates[i].name.clone()));
         }
     }
-    let all_names: Vec<String> = to_publish.iter().map(|(n, _, _)| n.clone()).collect();
+    let all_names: Vec<String> = to_publish.iter().map(|(n, ..)| n.clone()).collect();
     if !failed.is_empty() {
         err(&tx, "dry_run_failed", format!("nothing published: the dry run failed for {}", failed.join(", ")));
         return send(&tx, summary(a.execute, planned, skipped, verified, vec![], failed, all_names));
@@ -476,12 +534,25 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         return send(&tx, summary(false, planned, skipped, verified, vec![], vec![], all_names));
     }
     // 2. Publish, group by group, in order; stop at the first failure.
-    if a.token.is_none() {
+    let has = |kind| groups.iter().any(|g| g.kind == kind);
+    if a.token.is_none() && has(PackageKind::Cargo) {
         note(&tx, "no secrets://cargo/token — cargo uses its own credentials");
+    }
+    let hackage_token = if has(PackageKind::Cabal) {
+        registry.hackage.resolve_token_with(a.hackage_secret.clone()).await
+    } else {
+        None
+    };
+    if hackage_token.is_none() && has(PackageKind::Cabal) {
+        note(&tx, "no Hackage token (HACKAGE_TOKEN, secrets://hackage/token, password-command) — cabal uses its own credentials");
     }
     let mut published: Vec<String> = Vec::new();
     for g in &groups {
-        if !run_group(&tx, &chain, g, true, None, a.token.as_deref(), &a.log_dir).await {
+        let token = match g.kind {
+            PackageKind::Cargo => a.token.as_deref(),
+            PackageKind::Cabal => hackage_token.as_deref(),
+        };
+        if !run_group(&tx, &chain, g, true, None, token, &a.log_dir).await {
             let names: Vec<String> = g.crates.iter().map(|&i| chain.crates[i].name.clone()).collect();
             let rest: Vec<String> = all_names.iter().filter(|n| !published.contains(n)).cloned().collect();
             let code = if published.is_empty() { "publish_failed" } else { "half_published" };
@@ -494,7 +565,7 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         for &i in &g.crates {
             let c = &chain.crates[i];
             let on_registry = registry
-                .published(&c.name)
+                .published(c)
                 .await
                 .is_ok_and(|p| p.iter().any(|v| v.version == c.version));
             if !on_registry {
@@ -512,6 +583,19 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
     send(&tx, summary(true, planned, skipped, verified, published, vec![], vec![]));
 }
 
+/// A cargo-side command's environment: the token on execute, else none.
+fn cargo_env(mut cmd: tokio::process::Command, execute: bool, token: Option<&str>) -> tokio::process::Command {
+    if execute {
+        if let Some(t) = token {
+            cmd.env("CARGO_REGISTRY_TOKEN", t);
+        }
+    } else {
+        cmd.env_remove("CARGO_REGISTRY_TOKEN");
+    }
+    cmd.env("CARGO_TERM_COLOR", "never");
+    cmd
+}
+
 const fn summary(
     execute: bool,
     planned: u32,
@@ -524,10 +608,36 @@ const fn summary(
     BuildEvent::PublishSummary { execute, planned, skipped, verified, published, failed, not_published }
 }
 
+/// A Cabal group's commands. The dry run is `cabal check` then `cabal sdist`
+/// into the run's dir; the publish uploads that tarball. Returns the
+/// commands, what to show for them, the tarball the phase must leave, and
+/// the private config holding the token, alive as long as the commands.
+fn cabal_steps(
+    c: &CrateNode,
+    execute: bool,
+    token: Option<&str>,
+    log_dir: &Path,
+) -> std::io::Result<(Vec<tokio::process::Command>, String, PathBuf, Option<tempfile::NamedTempFile>)> {
+    let out = log_dir.join("sdist");
+    let tarball = out.join(format!("{}-{}.tar.gz", c.name, c.version));
+    if execute {
+        let config = token.map(HackageClient::token_config).transpose()?;
+        let upload = HackageClient::upload_command(
+            &c.dir,
+            &tarball.display().to_string(),
+            config.as_ref().map(tempfile::NamedTempFile::path),
+        );
+        return Ok((vec![upload], format!("cabal upload --publish {}", tarball.display()), tarball, config));
+    }
+    let cmds = vec![HackageClient::check_command(&c.dir), HackageClient::sdist_command(&c.dir, Some(&out))];
+    Ok((cmds, format!("cabal check && cabal sdist --ignore-project -o {}", out.display()), tarball, None))
+}
+
 /// One group's dry run or publish: `cargo publish -p …` in its cargo
-/// workspace, or the repo's own `[publish]` step. Output goes to a log
-/// under the run's dir; the event carries its path and, on failure, its
-/// tail. The token reaches the child through its environment only.
+/// workspace, the repo's own `[publish]` step, or a Cabal package's
+/// [`cabal_steps`]. Output goes to a log under the run's dir; the event
+/// carries its path and, on failure, its tail. The token reaches the child
+/// through its environment (cargo) or a private config (cabal) only.
 async fn run_group(
     tx: &Tx,
     chain: &Chain,
@@ -541,7 +651,20 @@ async fn run_group(
     let names: Vec<String> = g.crates.iter().map(|&i| chain.crates[i].name.clone()).collect();
     let repo_short = g.repo.rsplit('/').next().unwrap_or(&g.repo).to_string();
     let log = log_dir.join(format!("{:02}-{repo_short}-{phase}.log", g.n));
-    let (mut cmd, step) = if let Some(step) = &g.custom {
+    let cabal = if g.kind == PackageKind::Cabal {
+        match cabal_steps(&chain.crates[g.crates[0]], execute, token, log_dir) {
+            Ok(steps) => Some(steps),
+            Err(e) => {
+                err(tx, "io", format!("{}: {e}", names.join(", ")));
+                return false;
+            }
+        }
+    } else {
+        None
+    };
+    let (cmds, step, tarball, _token_config) = if let Some((cmds, step, tarball, config)) = cabal {
+        (cmds, step, Some(tarball), config)
+    } else if let Some(step) = &g.custom {
         let line = if execute { &step.execute } else { &step.dry_run };
         let mut c = tokio::process::Command::new("sh");
         c.arg("-c").arg(line).current_dir(&g.repo_dir);
@@ -550,7 +673,7 @@ async fn run_group(
         if let Some(p) = patch_file {
             c.env("HF_CARGO_CONFIG", p);
         }
-        (c, format!("custom: {line}"))
+        (vec![cargo_env(c, execute, token)], format!("custom: {line}"), None, None)
     } else {
         let mut c = tokio::process::Command::new("cargo");
         c.arg("publish").current_dir(&g.ws_root);
@@ -569,16 +692,8 @@ async fn run_group(
             names.iter().map(|n| format!("-p {n}")).collect::<Vec<_>>().join(" "),
             patch_file.map(|p| format!(" --config {}", p.display())).unwrap_or_default()
         );
-        (c, shown)
+        (vec![cargo_env(c, execute, token)], shown, None, None)
     };
-    if execute {
-        if let Some(t) = token {
-            cmd.env("CARGO_REGISTRY_TOKEN", t);
-        }
-    } else {
-        cmd.env_remove("CARGO_REGISTRY_TOKEN");
-    }
-    cmd.env("CARGO_TERM_COLOR", "never").stdin(Stdio::null());
     let file = match std::fs::File::create(&log) {
         Ok(f) => f,
         Err(e) => {
@@ -586,11 +701,6 @@ async fn run_group(
             return false;
         }
     };
-    let (Ok(out), Ok(errf)) = (file.try_clone(), file.try_clone()) else {
-        err(tx, "io", "log file");
-        return false;
-    };
-    cmd.stdout(Stdio::from(out)).stderr(Stdio::from(errf));
     let event = |state: &str, tail: Option<String>| BuildEvent::PublishGroup {
         group: g.n,
         repo: g.repo.clone(),
@@ -602,13 +712,35 @@ async fn run_group(
         tail,
     };
     send(tx, event("started", None));
-    let ok = match cmd.status().await {
-        Ok(s) => s.success(),
-        Err(e) => {
-            let _ = std::fs::write(&log, format!("could not start: {e}\n"));
-            false
+    let mut ok = true;
+    for mut cmd in cmds {
+        let (Ok(out), Ok(errf)) = (file.try_clone(), file.try_clone()) else {
+            err(tx, "io", "log file");
+            return false;
+        };
+        cmd.stdin(Stdio::null()).stdout(Stdio::from(out)).stderr(Stdio::from(errf));
+        ok = match cmd.status().await {
+            Ok(s) => s.success(),
+            Err(e) => {
+                let _ = std::fs::write(&log, format!("could not start: {e}\n"));
+                false
+            }
+        };
+        if !ok {
+            break;
         }
-    };
+    }
+    if let Some(t) = tarball.filter(|t| ok && !t.is_file()) {
+        let _ = std::fs::write(&log, format!("no tarball at {}\n", t.display()));
+        ok = false;
+    }
+    if ok && !execute && g.kind == PackageKind::Cabal {
+        let warnings = std::fs::read_to_string(&log)
+            .map_or(0, |s| s.lines().filter(|l| l.starts_with("Warning:")).count());
+        if warnings > 0 {
+            note(tx, format!("{}: cabal check: {warnings} warnings (not failures); see {}", names.join(", "), log.display()));
+        }
+    }
     let tail = if ok {
         None
     } else {

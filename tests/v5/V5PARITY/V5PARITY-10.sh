@@ -80,10 +80,10 @@ echo "$out" | hf_assert_event '.type == "release_summary" and .total == 1 and .o
 
 # --- build.publish: tier-2 skip unless a cargo/token secret exists ---
 if [[ -f "$HF_CONFIG/secrets.yaml" ]] && grep -q '^cargo/token:' "$HF_CONFIG/secrets.yaml" 2>/dev/null; then
-    out=$(hf_cmd build publish --org demo --name widget --channel crates.io)
+    out=$(hf_cmd build publish --org demo --name widget --channel crates.io --execute true)
     echo "$out" | hf_assert_event '.type == "package_published" or (.type == "error" and (.code == "publish_failed" or .code == "missing_token"))'
 else
-    out=$(hf_cmd build publish --org demo --name widget --channel crates.io)
+    out=$(hf_cmd build publish --org demo --name widget --channel crates.io --execute true)
     echo "$out" | hf_assert_event '.type == "error" and .code == "missing_token"'
 fi
 
