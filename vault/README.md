@@ -217,9 +217,9 @@ of absence.
 - **Hibernation.** A locked page is still written to the hibernation image, under
   full-disk encryption if it is on.
 - **The window at startup.** Blocks allocated before `lock_heap` runs are wiped but
-  not locked. Nothing secret exists by then.
-- **The allocator's bookkeeping.** Bytes outside a block's requested size are not
-  ours to wipe, and `recover`'s stdout, or any other process, is outside it.
+  not locked, and on macOS freeing one can take a count off a page it shares with a
+  locked block. Nothing secret exists by then.
+- **Bytes past a block's requested size.** Only what was asked for is wiped.
 
 ## Licence
 
