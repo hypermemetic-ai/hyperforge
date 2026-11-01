@@ -191,7 +191,7 @@ impl YamlSecretStore {
             })?;
         }
         let tmp = self.file.with_extension("yaml.tmp");
-        fs::write(&tmp, body).map_err(|e| SecretError::Io {
+        write_private(&tmp, body.as_bytes()).map_err(|e| SecretError::Io {
             file: tmp.display().to_string(),
             source: e,
         })?;
@@ -252,5 +252,58 @@ impl SecretResolver for YamlSecretStore {
                 format!("secrets.yaml ({})", self.file_display()),
             )),
         }
+    }
+}
+
+/// Write `bytes` to `path`, readable by its owner alone. The file replaces
+/// the secrets file by rename, so its mode is the secrets file's mode.
+/// `set_permissions` covers a stale tmp left by a crash at a wider mode,
+/// which `mode` on open would not change.
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fs::write(path, bytes)
+}
+
+#[cfg(all(test, unix))]
+mod private_file_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_write_leaves_the_file_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yaml");
+        fs::write(&path, "secrets: {}\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        // A crash's stale tmp, at the wider mode, must not pass its mode on.
+        let tmp = path.with_extension("yaml.tmp");
+        fs::write(&tmp, "stale").unwrap();
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let store = YamlSecretStore::new(dir.path());
+        store
+            .put_secret(&SecretRef::parse("secrets://npm/token").unwrap(), "value")
+            .unwrap();
+
+        assert_eq!(mode(&path), 0o600);
     }
 }
