@@ -1606,12 +1606,16 @@ fn silent_port() -> (std::net::TcpListener, String) {
 }
 
 fn set_memlock_limit_to_zero(command: &mut Command) {
+    set_memlock_limit(command, 0);
+}
+
+fn set_memlock_limit(command: &mut Command, bytes: u64) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: setrlimit is async-signal-safe and `none` is on this stack.
+    // SAFETY: setrlimit is async-signal-safe and `limit` is on this stack.
     unsafe {
-        command.pre_exec(|| {
-            let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-            if libc::setrlimit(libc::RLIMIT_MEMLOCK, &none) == 0 {
+        command.pre_exec(move || {
+            let limit = libc::rlimit { rlim_cur: bytes as libc::rlim_t, rlim_max: bytes as libc::rlim_t };
+            if libc::setrlimit(libc::RLIMIT_MEMLOCK, &limit) == 0 {
                 Ok(())
             } else {
                 Err(std::io::Error::last_os_error())
@@ -1753,32 +1757,82 @@ fn the_owners_tools_cannot_be_dumped_and_lock_their_memory() {
     let _ = child.wait();
 }
 
+/// The owner's tools at their work: no flag, and no value handled unlocked.
 #[test]
-fn memory_that_cannot_be_locked_is_said_out_loud() {
+fn memory_that_cannot_be_locked_stops_the_owners_tools_by_default() {
     if !limits_bind_this_user() {
         return;
     }
     let w = World::new();
     let _server = w.server();
-    assert!(w.encrypt("first").status.success());
 
     let mut encrypter = w.command(ENCRYPT);
     set_memlock_limit_to_zero(&mut encrypter);
     let mut child = encrypter.arg("s").arg(&w.recipients).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    child.stdin.take().unwrap().write_all(&w.value).unwrap();
+    // It may exit without reading this.
+    let _ = child.stdin.take().unwrap().write_all(&w.value);
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("NOT locked"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success(), "vault-encrypt went on");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not locked"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!w.secret_file("s").exists());
+    assert!(!w.manifest.exists());
 
     let mut approver = w.command(APPROVE);
     set_memlock_limit_to_zero(&mut approver);
+    let out = approver.arg("--identity").arg(&w.owner).stdin(Stdio::null()).output().unwrap();
+    assert!(!out.status.success(), "vault-approve went on");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not locked"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!contains(&out.stdout, b"watching"), "it connected: {}", String::from_utf8_lossy(&out.stdout));
+}
+
+/// The startup probe passes and a large value does not fit: the approver had a
+/// yes, and still sends no seal, with no flag.
+#[test]
+fn a_block_that_fails_to_lock_later_sends_no_seal() {
+    if !limits_bind_this_user() {
+        return;
+    }
+    let w = World::new();
+    let _server = w.server();
+    let large = vec![b'x'; 600 * 1024];
+    assert!(w.encrypt_value("s", &large).status.success());
+
+    let mut approver = w.command(APPROVE);
+    set_memlock_limit(&mut approver, 512 * 1024);
     approver.env_remove("PLEXUS_WS_TRACE");
     let mut approver = w.approver_from(approver, &w.owner);
-    wait_until("the warning", SHELL_WAIT, || approver.text().contains("NOT locked"));
-    let done = w.root.join("hash");
-    let mut caller = w.run_cmd("s", "unlocked", &w.hash_script(&done));
+    let (_id, public) = new_key();
+    let request = request_raw(&w, "s", "too large to lock", &public);
     approver.answer("y");
-    assert!(caller.wait().success(), "the default is to warn and go on");
+    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("not sealed"));
+    assert!(approver.text().contains("not locked"), "{}", approver.text());
+    assert!(!approver.text().contains("approved and sealed"), "{}", approver.text());
+    let answer = rpc1(&w, "result", json!({"id": request}));
+    assert_eq!(answer["status"], "denied", "{answer}");
+}
+
+/// Recovery on a bad day: it warns, and the value still comes out.
+#[test]
+fn recovery_warns_about_memory_it_cannot_lock_and_goes_on() {
+    if !limits_bind_this_user() {
+        return;
+    }
+    let w = World::new();
+    {
+        let _server = w.server();
+        assert!(w.encrypt("s").status.success());
+    }
+    let o = w.offline("s");
+    let mut recover = w.recover("s", &o);
+    set_memlock_limit_to_zero(&mut recover);
+    let out = recover.output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.stdout, w.value);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("NOT locked"), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let mut strict = w.recover("s", &o);
+    set_memlock_limit_to_zero(&mut strict);
+    refused_with(&strict.arg("--require-memory-lock").output().unwrap(), "not locked");
 }
 
 #[test]
