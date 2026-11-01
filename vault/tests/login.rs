@@ -110,3 +110,20 @@ fn a_refused_login_from_workos_ends_the_flow() {
     assert!(!child.wait().unwrap().success());
     assert!(!file.exists());
 }
+
+/// The refresh token is on this process's heap: no core of it, and no reading it
+/// through `/proc` by this user's other processes.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_login_tool_cannot_be_dumped() {
+    let idp = Idp::start();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut child, _url, _stdout) = spawn(&idp, &dir.path().join("login.json"), free_port());
+    let limits = std::fs::read_to_string(format!("/proc/{}/limits", child.id())).unwrap();
+    let core = limits.lines().find(|l| l.starts_with("Max core file size")).unwrap();
+    assert_eq!(core.split_whitespace().nth(4), Some("0"), "{core}");
+    let denied = std::fs::File::open(format!("/proc/{}/mem", child.id())).unwrap_err();
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied, "dumpable: {denied}");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}

@@ -1824,6 +1824,41 @@ fn a_block_that_fails_to_lock_later_sends_no_seal() {
     assert_eq!(answer["status"], "denied", "{answer}");
 }
 
+/// A block that did not lock is that request's failure, and only that request's.
+/// The large value is refused for good reason; the approver then opens a small
+/// one with no restart, and the limit never moved.
+#[test]
+fn a_failed_lock_refuses_that_request_and_not_the_next() {
+    if !limits_bind_this_user() {
+        return;
+    }
+    let w = World::new();
+    let _server = w.server();
+    let large = vec![b'x'; 600 * 1024];
+    assert!(w.encrypt_value("large", &large).status.success());
+    assert!(w.encrypt_value("small", b"a small value\n").status.success());
+
+    let mut approver = w.command(APPROVE);
+    set_memlock_limit(&mut approver, 512 * 1024);
+    approver.env_remove("PLEXUS_WS_TRACE");
+    let mut approver = w.approver_from(approver, &w.owner);
+
+    let (_id, public) = new_key();
+    let refused = request_raw(&w, "large", "too large to lock", &public);
+    approver.answer("y");
+    wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("not sealed"));
+    assert_eq!(rpc1(&w, "result", json!({"id": refused}))["status"], "denied");
+
+    let (one_time, public) = new_key();
+    let request = request_raw(&w, "small", "after the failure", &public);
+    wait_until("the next request to show", SHELL_WAIT, || approver.text().contains("after the failure"));
+    approver.answer("y");
+    wait_until("the approver to answer", SHELL_WAIT, || approver.text().matches("denied").count() > 1 || approver.text().contains("approved and sealed"));
+    assert!(approver.text().contains("approved and sealed"), "one failure outlived its request: {}", approver.text());
+    let answer = rpc1(&w, "result", json!({"id": request}));
+    assert_eq!(open(&one_time, answer["sealed"].as_str().unwrap()).unwrap(), b"a small value\n");
+}
+
 /// Recovery on a bad day: it warns, and the value still comes out.
 #[test]
 fn recovery_warns_about_memory_it_cannot_lock_and_goes_on() {

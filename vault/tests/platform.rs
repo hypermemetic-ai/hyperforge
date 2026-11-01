@@ -95,6 +95,19 @@ fn reusing_one_block_never_exhausts_the_locks() {
     assert_eq!(platform::lock_failures(), before);
 }
 
+/// A tool that holds a token or a value frees it through the wiping heap. Read
+/// from the source: what a process has already freed cannot be looked for once
+/// it has exited, and `vault-login` exits as soon as its tokens are written.
+#[test]
+fn every_tool_that_holds_a_token_runs_on_the_wiping_heap() {
+    for tool in ["vault-approve", "vault-encrypt", "vault-login"] {
+        let path = format!("{}/src/bin/{tool}.rs", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("#[global_allocator]\nstatic HEAP: platform::Zeroing = platform::Zeroing(std::alloc::System);"), "{tool}");
+        assert!(text.contains("platform::undumpable()?;"), "{tool}");
+    }
+}
+
 /// Nothing here may reach the code a mobile build shares.
 #[test]
 fn the_library_sets_no_process_policy() {
