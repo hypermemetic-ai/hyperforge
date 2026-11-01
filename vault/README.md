@@ -235,8 +235,9 @@ If memory cannot be locked, `vault-approve` and `vault-encrypt` stop: before any
 value at startup, and with no seal sent if a block fails to lock later. A block that
 fails later costs that one request, which is denied: the next is judged on its own
 blocks, with no restart. There is no switch to go on regardless, so the remedy is a
-higher `ulimit -l`. On a Mac the default is `unlimited`, and both tools run there; below
-about 512 KiB they stop.
+higher `ulimit -l`. On a Mac the default is `unlimited`, and both tools run there. Under
+a limit they stop at startup below about 512 KiB, an ordinary request needs about 1.5
+MiB, and the largest value about 3 MiB, as a Mac locks 16 KiB at a time.
 `--require-memory-lock` is still accepted on both and changes nothing. `vault-approve
 recover` is the exception: it says so on stderr and goes on, because a recovery on a
 bad day must still work, and there `--require-memory-lock` makes it stop.

@@ -1918,8 +1918,10 @@ fn a_failed_lock_refuses_that_request_and_not_the_next() {
     assert!(w.encrypt_value("small", b"a small value\n").status.success());
 
     let mut approver = w.command(APPROVE);
-    // Room for an ordinary request, and not for the large one.
-    set_memlock_limit(&mut approver, 768 * 1024);
+    // Room for an ordinary request, and not for the large one. A Mac locks 16 KiB
+    // at a time, so the same request needs more there: measured, 1.5 MiB against 3.
+    let limit = if cfg!(target_vendor = "apple") { 2048 } else { 768 };
+    set_memlock_limit(&mut approver, limit * 1024);
     approver.env_remove("PLEXUS_WS_TRACE");
     let mut approver = w.approver_from(approver, &w.owner);
 

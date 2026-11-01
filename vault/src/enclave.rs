@@ -336,7 +336,9 @@ mod tests {
             ("cbio or the passcode", set(&[entry("cbio", set(&[hash("pbioc"), hash("pbioh")])), entry("cpwd", set(&[]))])),
             ("an empty cbio", set(&[entry("cbio", set(&[]))])),
             ("one hash of the two", set(&[entry("cbio", set(&[hash("pbioh")]))])),
+            ("the other hash of the two", set(&[entry("cbio", set(&[hash("pbioc")]))])),
             ("an empty hash", set(&[entry("cbio", set(&[entry("pbioc", tlv(OCTETS, &[])), hash("pbioh")]))])),
+            ("the other hash empty", set(&[entry("cbio", set(&[hash("pbioc"), entry("pbioh", tlv(OCTETS, &[]))]))])),
         ];
         for (what, ock) in cases {
             assert!(!requires_current_biometry(&blob(ock)), "{what}");
