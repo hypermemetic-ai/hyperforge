@@ -140,6 +140,8 @@ impl OrgsService {
 
 /// Orgs CRUD and credentials. Methods are attached by V5ORGS tickets.
 #[plexus_macros::activation(
+    trait = "OrgsApi",
+    methods = marked,
     namespace = "orgs",
     description = "Orgs CRUD",
     crate_path = "plexus_core"

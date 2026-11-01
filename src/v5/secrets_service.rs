@@ -55,6 +55,8 @@ impl SecretsService {
 }
 
 #[plexus_macros::activation(
+    trait = "SecretsApi",
+    methods = marked,
     namespace = "secrets",
     description = "v5 secret store wire surface (V5PARITY-7)",
     crate_path = "plexus_core"

@@ -169,6 +169,8 @@ impl HyperforgeService {
 
 /// Hyperforge v5 root — minimal scaffold.
 #[plexus_macros::activation(
+    trait = "HyperforgeApi",
+    methods = marked,
     namespace = "hyperforge",
     description = "Hyperforge v5 root",
     crate_path = "plexus_core"

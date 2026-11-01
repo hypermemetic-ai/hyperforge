@@ -25,7 +25,7 @@ count_only=0
 # check, so anything else on that line is still caught.
 ALLOW=$(cat <<'ALLOWED'
 src/registry\.rs$	"registry-hub"	foreign: plexus-registry's root namespace on the wire today (its --namespace default), tried after "registry-service"; goes when plexus-registry is renamed (no NAMING leaf covers it yet)
-\.rs$	\bDynamicHub as DynamicService\b	the plexus-core 0.5 (crates.io) and 0.6.1 type under its published name, imported under the new one; removed by NAMING-17 (after HYPERFORGE-14)
+\.rs$	\bDynamicHub as DynamicService\b	the plexus-core 0.6.1 type under its published name, imported under the new one; removed by NAMING-17 (after HYPERFORGE-14)
 ALLOWED
 )
 

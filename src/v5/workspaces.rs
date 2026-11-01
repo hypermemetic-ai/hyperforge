@@ -377,6 +377,8 @@ fn parse_repos_arg(raw: &Option<String>) -> Result<Vec<WorkspaceRepo>, String> {
 
 /// Workspaces CRUD + reconcile + sync.
 #[plexus_macros::activation(
+    trait = "WorkspacesApi",
+    methods = marked,
     namespace = "workspaces",
     description = "Workspaces CRUD",
     crate_path = "plexus_core"

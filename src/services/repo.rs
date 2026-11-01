@@ -100,6 +100,8 @@ impl RepoService {
 }
 
 #[plexus_macros::activation(
+    trait = "RepoApi",
+    methods = marked,
     namespace = "repo",
     description = "Single-repo operations and registry CRUD",
     crate_path = "plexus_core"

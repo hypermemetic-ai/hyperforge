@@ -82,6 +82,8 @@ fn guess_content_type(filename: &str) -> &'static str {
 }
 
 #[plexus_macros::activation(
+    trait = "ReleasesApi",
+    methods = marked,
     namespace = "releases",
     description = "Release management: list, create, upload, delete, assets",
     crate_path = "plexus_core"

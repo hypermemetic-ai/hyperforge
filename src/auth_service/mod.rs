@@ -70,6 +70,8 @@ impl AuthService {
 }
 
 #[plexus_macros::activation(
+    trait = "AuthApi",
+    methods = marked,
     namespace = "auth",
     version = "1.0.0",
     description = "Simple secret management with YAML storage",

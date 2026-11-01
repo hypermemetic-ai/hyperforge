@@ -321,6 +321,8 @@ fn resolve_single_repo_dir(
 }
 
 #[plexus_macros::activation(
+    trait = "BuildApi",
+    methods = marked,
     namespace = "build",
     description = "v5 build/release/dist wire surface (V5PARITY-9/10/11)",
     crate_path = "plexus_core"
@@ -440,7 +442,7 @@ impl BuildService {
         to_ref: Option<String>,
         include: Option<Vec<String>>,
         exclude: Option<Vec<String>>,
-    ) -> futures::stream::BoxStream<'static, BuildEvent> {
+    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
         use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
         let (from_ref, to_ref) = match (from_ref, to_ref) {
@@ -514,7 +516,7 @@ impl BuildService {
         closure: Option<bool>,
         dry_run: Option<bool>,
         commit: Option<bool>,
-    ) -> futures::stream::BoxStream<'static, BuildEvent> {
+    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
         use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
         let kind_or_target = to.clone().or_else(|| bump.clone()).unwrap_or_else(|| "patch".into());
@@ -592,7 +594,7 @@ impl BuildService {
         exclude: Option<Vec<String>>,
         closure: Option<bool>,
         execute: Option<bool>,
-    ) -> futures::stream::BoxStream<'static, BuildEvent> {
+    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
         use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
         let Some(org) = org else {

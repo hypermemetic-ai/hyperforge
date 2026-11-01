@@ -607,6 +607,8 @@ impl Default for HyperforgeService {
 }
 
 #[plexus_macros::activation(
+    trait = "HyperforgeApi",
+    methods = marked,
     namespace = "hyperforge",
     description = "Multi-forge repository management",
     crate_path = "plexus_core"

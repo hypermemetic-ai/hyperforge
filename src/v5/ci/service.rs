@@ -80,6 +80,8 @@ impl CiService {
 }
 
 #[plexus_macros::activation(
+    trait = "CiApi",
+    methods = marked,
     namespace = "ci",
     description = "Pipelines declared in repos' .hyperforge/pipelines.toml; each pipeline is a child (HYPERFORGE-22)",
     crate_path = "plexus_core"
@@ -194,6 +196,8 @@ impl PipelineService {
 }
 
 #[plexus_macros::activation(
+    trait = "PipelineApi",
+    methods = marked,
     namespace = "pipeline",
     namespace_fn = "pipeline_name",
     description = "A pipeline: start a run, trigger its stages, read its runs and logs",

@@ -52,6 +52,8 @@ fn make_auth() -> Result<Arc<YamlAuthProvider>, String> {
 }
 
 #[plexus_macros::activation(
+    trait = "ImagesApi",
+    methods = marked,
     namespace = "images",
     description = "Container image management: list, delete, push",
     crate_path = "plexus_core"

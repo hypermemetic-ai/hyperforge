@@ -45,9 +45,9 @@ path = "src/bin/hyperforge-ssh.rs"
 
 [dependencies]
 # Service framework integration
-plexus-core = "0.5"
-plexus-macros = "0.5"
-plexus-transport = "0.2"
+plexus-core = "0.6.1"
+plexus-macros = "0.6.1"
+plexus-transport = { version = "0.5.1", features = ["mcp"] }  # hyperforge-legacy --mcp
 
 # Async
 tokio = { version = "1", features = ["full"] }

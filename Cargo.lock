@@ -1127,9 +1127,9 @@ dependencies = [
  "git2",
  "jsonrpsee",
  "oci-client",
- "plexus-core 0.5.2",
- "plexus-macros 0.5.4",
- "plexus-transport 0.2.2",
+ "plexus-core",
+ "plexus-macros",
+ "plexus-transport",
  "regex",
  "reqwest",
  "schemars 1.2.1",
@@ -1159,9 +1159,9 @@ dependencies = [
  "futures",
  "jsonrpsee",
  "plexus-client",
- "plexus-core 0.6.1",
- "plexus-macros 0.6.1",
- "plexus-transport 0.5.1",
+ "plexus-core",
+ "plexus-macros",
+ "plexus-transport",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -2033,6 +2033,8 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "plexus-auth-core"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4442bce64547d441137268ac572d0b5a457b96cd358da9c5337d932af042c458"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2049,6 +2051,8 @@ dependencies = [
 [[package]]
 name = "plexus-client"
 version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "395fdda5f57da9783e5ea193ebc0e3f27f3d83fa40c9e1b84502d2c05824c3da"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -2061,35 +2065,9 @@ dependencies = [
 
 [[package]]
 name = "plexus-core"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "104b1829f1040dd3f1437d7d89ad01f0a049811142acfe5b6cba1006db08dfe8"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "bitflags",
- "chrono",
- "futures",
- "futures-core",
- "futures-util",
- "http",
- "jsonrpsee",
- "plexus-macros 0.5.4",
- "rmcp",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "plexus-core"
 version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89c9e214e64bf57a264f0bcbc3a92c4b52289751fb52a1dc6440abc84b75aa13"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2103,7 +2081,7 @@ dependencies = [
  "jsonrpsee",
  "plexus-auth-core",
  "plexus-client",
- "plexus-macros 0.6.1",
+ "plexus-macros",
  "rmcp",
  "schemars 1.2.1",
  "serde",
@@ -2117,20 +2095,9 @@ dependencies = [
 
 [[package]]
 name = "plexus-macros"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e978f8a1dcf4ac4f86ae089c79eec4f0cc01454777e69acf12ab432859f49081"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn",
- "uuid",
-]
-
-[[package]]
-name = "plexus-macros"
 version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fbad0fb865374abd1d0d9cdbe2faf6f1c09df137b05dc19e3bddf303bc2c536"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2138,36 +2105,13 @@ dependencies = [
  "serde_json",
  "syn",
  "uuid",
-]
-
-[[package]]
-name = "plexus-transport"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8f03ef14f99b0e6cdc2e481a7265ede90047ed9712b625ad1aa3882afa3ced7"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "form_urlencoded",
- "futures",
- "http",
- "http-body",
- "jsonrpsee",
- "plexus-core 0.5.2",
- "rmcp",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tower",
- "tracing",
 ]
 
 [[package]]
 name = "plexus-transport"
 version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53287daec3dc25067f0db1e4beb50d3662e7015de2c4ca46b5f3cd748698619c"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2180,7 +2124,8 @@ dependencies = [
  "hyper",
  "ipnet",
  "jsonrpsee",
- "plexus-core 0.6.1",
+ "plexus-core",
+ "rmcp",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3777,14 +3722,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75c7f0ef91146ebfb530314f5f1d24528d7f0767efbfd31dce919275413e393e"
 dependencies = [
- "webpki-root-certs 1.0.10",
+ "webpki-root-certs 1.0.11",
 ]
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.10"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
+checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
 dependencies = [
  "rustls-pki-types",
 ]

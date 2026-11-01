@@ -227,8 +227,7 @@ plexus-macros emits `trait Driver` (a built-in driver implements it),
 `server` feature) and `DriverClient<T>: Driver` (a plugin over a transport).
 `--no-default-features` is the wasm-safe build. A run ends in DEPLOY-10's
 `Record` unless the system records itself (`Capabilities.records`). It takes
-the plexus 0.6 line by sibling path (`../plexus-core`, `../plexus-macros`)
-until plexus-macros 0.6.1 is published.
+the plexus 0.6 line from crates.io, as the root crate does.
 
 ```bash
 cargo test -p hyperforge-driver

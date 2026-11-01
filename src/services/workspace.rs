@@ -39,6 +39,8 @@ impl WorkspaceService {
 }
 
 #[plexus_macros::activation(
+    trait = "WorkspaceApi",
+    methods = marked,
     namespace = "workspace",
     description = "Multi-repo workspace orchestration",
     crate_path = "plexus_core"

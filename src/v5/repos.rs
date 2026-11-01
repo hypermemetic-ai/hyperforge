@@ -594,6 +594,8 @@ fn validation_event(msg: impl Into<String>) -> RepoEvent {
 
 /// Repos CRUD + `ForgePort` surface.
 #[plexus_macros::activation(
+    trait = "ReposApi",
+    methods = marked,
     namespace = "repos",
     description = "Repos CRUD + ForgePort",
     crate_path = "plexus_core"

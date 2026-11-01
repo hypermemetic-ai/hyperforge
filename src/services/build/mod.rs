@@ -40,6 +40,8 @@ impl Default for BuildService {
 }
 
 #[plexus_macros::activation(
+    trait = "BuildApi",
+    methods = marked,
     namespace = "build",
     description = "Development tools: manifest generation, publishing, cross-repo execution",
     crate_path = "plexus_core"
