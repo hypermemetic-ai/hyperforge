@@ -71,7 +71,7 @@ required-features = ["server"]
 [features]
 default = ["server"]
 server = [
-    "dep:plexus-auth-core",
+    "plexus-auth-core/adapters",
     "dep:plexus-core",
     "dep:plexus-macros",
     "dep:plexus-transport",
@@ -105,14 +105,16 @@ anyhow = "1"
 # vault-login and the owner's token refresh: HTTPS to WorkOS on the client half.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 base64 = "0.22"
+# vault-login's check of what WorkOS answered, the one the server makes: JWKS,
+# signature, issuer and client. Not a server crate: no transport, no RPC. The
+# `server` feature adds `adapters`: the namespaced Principal, which plexus-core
+# does not re-export, OidcAdapter and Carriers.
+plexus-auth-core = { version = "0.2", features = ["oidc-reqwest"] }
 
 # The latest published plexus line, from crates.io. driver/ is on sibling paths
 # from before 0.6.1 was published, so the workspace holds both for now; move
 # these when the workspace moves to the next published line.
 plexus-core = { version = "0.6", optional = true }
-# The namespaced Principal, which plexus-core does not re-export, and
-# `adapters` for OidcAdapter, Carriers and the reqwest JWKS fetcher.
-plexus-auth-core = { version = "0.2", features = ["adapters"], optional = true }
 plexus-macros = { version = "0.6", optional = true }
 plexus-transport = { version = "0.5", default-features = false, optional = true }
 # The activation macro's expansion names these two directly.

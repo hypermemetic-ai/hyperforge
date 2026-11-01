@@ -65,22 +65,27 @@ still runs, and refuses everyone.
 
 ## The owner's sign-in, on the Mac
 
-Register this redirect URI on the WorkOS client first, byte for byte:
-
-```
-http://127.0.0.1:4471/callback
-```
-
-Then, with the same two values in the environment:
+Nothing needs registering on the WorkOS client: there is no redirect URI and no secret.
+With the same two values in the environment:
 
 ```sh
 set -a; . vault/config/production.env; set +a
 vault-login
 ```
 
-It opens the browser, listens on that address, and writes `~/.config/vault/login.json`,
-owner-only. `--provider` picks the sign-in when `authkit` is not what the environment uses,
-and `--redirect-uri` changes the URI. Sign in again whenever a tool says to run `vault-login`.
+It prints a page and a code, and opens the page if it is on a WorkOS or AuthKit host. If it
+is not, it says so and leaves it to you. Enter the code in a browser, on any device, then
+finish signing in. It writes `~/.config/vault/login.json`, owner-only. `--no-browser` only
+prints.
+
+**Enter a code only if you started this sign-in yourself, just now.** A code someone else
+gives you signs *them* in as you.
+
+`vault-login` waits as long as WorkOS says the code lasts, five minutes in its docs. It stops
+with nothing stored if the code expires, you deny it, or WorkOS answers anything it does not
+know. Sign in as the owner: a token for another account, or one that fails the server's
+check of signature, issuer and client, is refused, and any earlier sign-in stays as it was.
+Sign in again whenever a tool says to run `vault-login`.
 
 ## A machine caller
 

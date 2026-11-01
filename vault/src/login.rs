@@ -1,69 +1,52 @@
-//! The owner's WorkOS sign-in, on the client half: PKCE through a loopback
-//! redirect, and the refresh that keeps a token fresh.
+//! The owner's WorkOS sign-in, on the client half: the device flow, and the
+//! refresh that keeps a token fresh.
 //!
 //! synapse's login cannot be reused: it stores an opaque Menger session
 //! (`mgs_…`), which WorkOS's issuer did not sign. So `vault-login` signs the
-//! owner in itself, as a public client: no secret exists anywhere on this side.
+//! owner in itself, as a public client: no secret exists anywhere on this side,
+//! and nothing listens on this machine. [`sign_in`] asks WorkOS for a code, the
+//! owner approves it in a browser, on any device, and this side polls.
+//!
+//! What comes back is checked before it is stored: WorkOS's signature, issuer
+//! and client through `OidcValidator`, the check the server runs at its door,
+//! and then that it is the owner's.
 //!
 //! `login.json` (0600) holds the access and refresh tokens. The access token is
 //! short-lived and the socket closes when it ends, so [`Login::token`] hands out
 //! one with [`MARGIN`] left to run, refreshing when it must. WorkOS's refresh
 //! tokens rotate: the new one is on disk before the access token is used.
+//!
+//! This is shared code: it takes its settings as values, and leaves the
+//! printing, the browser and the command line to `vault-login`.
 
 use anyhow::{anyhow, bail, Context};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use plexus_auth_core::capabilities::IssuerUrl;
+use plexus_auth_core::oidc::{Audience, AudienceClaim, OidcConfig, OidcError, OidcValidator};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, Zeroizing};
 
 /// A token must have this long left to be handed out: enough to connect and
 /// make one call. The socket's end is the transport's to enforce.
 const MARGIN: Duration = Duration::from_secs(5);
-/// How long the browser has to come back.
-const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+/// RFC 8628 3.2 and 3.5, for an answer that gives no `interval`, and for what
+/// `slow_down` adds. WorkOS's docs show 5 and ask for "more".
+const DEFAULT_INTERVAL: u64 = 5;
+const SLOW_DOWN: Duration = Duration::from_secs(5);
+/// The sooner of this and the server's `expires_in` ends the wait. WorkOS shows
+/// 300: a server saying a year does not get to keep this tool waiting a year.
+const LONGEST_WAIT: u64 = 1800;
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 pub const WORKOS_API: &str = "https://api.workos.com";
-
-/// Where the owner signs in. All of it public; the deployment's values live in
-/// `config/production.env`, not here.
-#[derive(clap::Args, Debug, Clone)]
-pub struct WorkosArgs {
-    /// The WorkOS client's public id. An `Option` only so that a tool's offline
-    /// subcommands, which `subcommand_negates_reqs` frees of it, still parse:
-    /// `vault-approve recover` needs no sign-in. Clap requires it everywhere else.
-    #[arg(long, env = "VAULT_WORKOS_CLIENT_ID", required = true)]
-    pub workos_client_id: Option<String>,
-    /// The WorkOS API.
-    #[arg(long, env = "VAULT_WORKOS_BASE", default_value = WORKOS_API)]
-    pub workos_base: String,
-    /// Where `vault-login` keeps the owner's tokens, owner-only.
-    #[arg(long, env = "VAULT_LOGIN_FILE")]
-    pub login_file: Option<PathBuf>,
-}
-
-impl WorkosArgs {
-    pub fn login_path(&self) -> anyhow::Result<PathBuf> {
-        match &self.login_file {
-            Some(path) => Ok(path.clone()),
-            None => Ok(PathBuf::from(std::env::var("HOME").context("no HOME: pass --login-file")?).join(".config/vault/login.json")),
-        }
-    }
-
-    pub fn login(&self) -> anyhow::Result<Login> {
-        let client_id = self.workos_client_id.clone().context("no WorkOS client id: pass --workos-client-id")?;
-        Ok(Login { client_id, base: self.workos_base.trim_end_matches('/').to_string(), file: self.login_path()?, http: http()? })
-    }
-}
 
 fn http() -> anyhow::Result<reqwest::Client> {
     // A token endpoint has no business redirecting a token anywhere.
@@ -117,6 +100,11 @@ pub struct Login {
 }
 
 impl Login {
+    /// `client_id` and `base` are public; `file` is where the tokens live.
+    pub fn new(client_id: String, base: &str, file: PathBuf) -> anyhow::Result<Login> {
+        Ok(Login { client_id, base: base.trim_end_matches('/').to_string(), file, http: http()? })
+    }
+
     async fn authenticate(&self, grant: Value) -> anyhow::Result<Tokens> {
         let url = format!("{}/user_management/authenticate", self.base);
         let response = self.http.post(&url).json(&grant).send().await.with_context(|| format!("reaching {url}"))?;
@@ -145,92 +133,173 @@ impl Login {
     }
 }
 
-/// `n` random bytes, base64url: a verifier or a state.
-fn random() -> anyhow::Result<Zeroizing<String>> {
-    let mut bytes = Zeroizing::new([0u8; 32]);
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes[..])).context("reading /dev/urandom")?;
-    Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(&bytes[..])))
+/// What WorkOS's device endpoint answers. `verification_uri_complete` is left
+/// out on purpose: the one thing this tool opens is the page where the owner
+/// types the code they can see here.
+#[derive(Deserialize)]
+struct Authorization {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: Option<u64>,
 }
 
-/// What a login needs beyond [`Login`].
-pub struct LoginRequest<'a> {
-    pub redirect_uri: &'a str,
-    /// `authkit`, or the connection the WorkOS environment signs in with.
-    pub provider: &'a str,
-}
-
-/// Runs the flow: listens on the redirect, shows the URL (and `open_browser`s
-/// it), and stores what the code exchanges for.
-pub async fn sign_in(login: &Login, request: LoginRequest<'_>, open_browser: impl FnOnce(&str)) -> anyhow::Result<()> {
-    let redirect = Url::parse(request.redirect_uri).context("--redirect-uri is not a URL")?;
-    let host = redirect.host_str().context("--redirect-uri has no host")?.to_string();
-    if redirect.scheme() != "http" || !matches!(host.as_str(), "127.0.0.1" | "localhost") {
-        bail!("--redirect-uri must be http://127.0.0.1:<port>/… or http://localhost:<port>/…: this tool only listens on loopback");
+impl Drop for Authorization {
+    fn drop(&mut self) {
+        self.device_code.zeroize();
     }
-    let port = redirect.port().context("--redirect-uri needs a port: WorkOS matches it exactly")?;
-    let listener = TcpListener::bind((host.as_str(), port)).await.with_context(|| format!("listening on {host}:{port}"))?;
-
-    let verifier = random()?;
-    let state = random()?;
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let mut url = Url::parse(&format!("{}/user_management/authorize", login.base)).context("the WorkOS base is not a URL")?;
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &login.client_id)
-        .append_pair("redirect_uri", request.redirect_uri)
-        .append_pair("provider", request.provider)
-        .append_pair("state", &state)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256");
-    println!("Sign in at:\n{url}");
-    std::io::stdout().flush()?;
-    open_browser(url.as_str());
-
-    let code = tokio::time::timeout(LOGIN_TIMEOUT, callback(&listener, redirect.path(), &state)).await.context("the browser did not come back")??;
-    let grant = json!({"client_id": login.client_id, "grant_type": "authorization_code", "code": *code, "code_verifier": *verifier});
-    let tokens = login.authenticate(grant).await?;
-    write_tokens(&login.file, &tokens)?;
-    println!("signed in: {}", login.file.display());
-    Ok(())
 }
 
-/// The code from the first request that carries this flow's `state`. Anything
-/// else on the port is told no and ignored: another local page can reach it.
-async fn callback(listener: &TcpListener, path: &str, state: &str) -> anyhow::Result<Zeroizing<String>> {
-    loop {
-        let (mut socket, _) = listener.accept().await.context("the redirect listener")?;
-        let mut buffer = Zeroizing::new(vec![0u8; 8192]);
-        // To the end of the headers, however the request was split up: one
-        // read is not one request. A silent connection does not hold the flow.
-        let mut n = 0;
-        let _ = tokio::time::timeout(Duration::from_secs(5), async {
-            while n < buffer.len() && !buffer[..n].windows(4).any(|w| w == b"\r\n\r\n") {
-                match socket.read(&mut buffer[n..]).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(more) => n += more,
-                }
-            }
-        })
-        .await;
-        let head = Zeroizing::new(String::from_utf8_lossy(&buffer[..n]).into_owned());
-        let target = head.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or("");
-        let parsed = Url::parse(&format!("http://loopback{target}")).ok().filter(|u| u.path() == path);
-        let query: Vec<(String, String)> = parsed.iter().flat_map(|u| u.query_pairs().into_owned()).collect();
-        let field = |name: &str| query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
-        let ours = field("state") == Some(state);
-        let (status, body) = match ours {
-            true => ("200 OK", "Signed in. You can close this tab."),
-            false => ("400 Bad Request", "This is not the sign-in that is waiting."),
+/// What the owner has to be told, to be shown however the caller shows things.
+/// Everything here has been through [`crate::wire::printable`].
+pub struct Prompt {
+    pub verification_uri: String,
+    pub user_code: String,
+    /// The page, if it is on a host this tool may open by itself.
+    pub open: Option<String>,
+}
+
+impl Prompt {
+    /// For a terminal.
+    pub fn instructions(&self) -> String {
+        let warning = match self.open {
+            Some(_) => "",
+            None => "That is not a WorkOS address, so it was not opened. Check it before you use it.\n",
         };
-        let _ = socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
-        if !ours {
-            continue;
-        }
-        if let Some(error) = field("error") {
-            bail!("WorkOS said: {}", crate::wire::printable(error, 100));
-        }
-        return Ok(Zeroizing::new(field("code").context("the redirect carried no code")?.to_string()));
+        format!(
+            "Sign in at:\n{}\n{warning}and enter this code:\n{}\nEnter a code only if you started this sign-in yourself, just now. If a person, page or message gave you the code, stop.",
+            self.verification_uri, self.user_code
+        )
     }
+}
+
+/// `uri`, normalised, if it is plain https on the standard port of a WorkOS or
+/// AuthKit host. Nothing else is opened: a custom AuthKit domain is printed, and
+/// the owner judges it.
+fn openable(uri: &str) -> Option<String> {
+    let url = Url::parse(uri).ok()?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() || url.port().is_some() {
+        return None;
+    }
+    let host = url.domain()?;
+    ["workos.com", "authkit.app"]
+        .iter()
+        .any(|root| host == *root || host.strip_suffix(root).is_some_and(|rest| rest.ends_with('.')))
+        .then(|| url.to_string())
+}
+
+/// What a poll that did not succeed says.
+#[derive(Deserialize)]
+struct PollError {
+    error: String,
+}
+
+impl Login {
+    /// The check the server's door makes: `OidcAdapter::workos_config`, which
+    /// is behind the server feature with the rest of the adapters.
+    fn oidc_config(&self) -> anyhow::Result<OidcConfig> {
+        let issuer = format!("{}/user_management/{}", self.base, self.client_id);
+        let url = Url::parse(&issuer).context("the WorkOS base is not a URL")?;
+        let issuer = IssuerUrl::try_new(url).map_err(|_| anyhow!("the WorkOS base must be https"))?;
+        let audience = Audience::try_new(self.client_id.as_str()).map_err(|_| anyhow!("the WorkOS client id is not printable"))?;
+        Ok(OidcConfig::new(issuer, audience).with_audience_claim(AudienceClaim::ClientId))
+    }
+
+    /// Asks for a code. No secret and no redirect: the client id is the request.
+    async fn authorize(&self) -> anyhow::Result<Authorization> {
+        let url = format!("{}/user_management/authorize/device", self.base);
+        let response = self.http.post(&url).form(&[("client_id", self.client_id.as_str())]).send().await.with_context(|| format!("reaching {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!("WorkOS refused to start a sign-in ({status})");
+        }
+        let body = response.bytes().await.map_err(|_| anyhow!("reading WorkOS's answer"))?;
+        let authorization: Authorization = serde_json::from_slice(&body).map_err(|_| anyhow!("WorkOS's answer is not a device authorization"))?;
+        if authorization.device_code.is_empty() || authorization.user_code.is_empty() || authorization.verification_uri.is_empty() || authorization.expires_in == 0 {
+            bail!("WorkOS's answer is not a device authorization");
+        }
+        Ok(authorization)
+    }
+
+    /// Polls until WorkOS answers for good or `deadline` passes, at `interval`
+    /// and never sooner. Only the two answers that mean "keep waiting" keep it
+    /// waiting. Anything WorkOS says beyond its status stays out of the error.
+    async fn poll(&self, authorization: &Authorization, deadline: Instant) -> anyhow::Result<Tokens> {
+        let url = format!("{}/user_management/authenticate", self.base);
+        let form = [("grant_type", DEVICE_GRANT), ("device_code", authorization.device_code.as_str()), ("client_id", self.client_id.as_str())];
+        let mut interval = Duration::from_secs(authorization.interval.unwrap_or(DEFAULT_INTERVAL).max(1));
+        loop {
+            if Instant::now() + interval >= deadline {
+                bail!("the code expired before the sign-in finished: run vault-login again");
+            }
+            tokio::time::sleep(interval).await;
+            let exchange = async {
+                let response = self.http.post(&url).form(&form).send().await?;
+                let status = response.status();
+                Ok::<_, reqwest::Error>((status, Zeroizing::new(response.bytes().await?.to_vec())))
+            };
+            let (status, body) = tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), exchange)
+                .await
+                .map_err(|_| anyhow!("the code expired before the sign-in finished: run vault-login again"))?
+                .with_context(|| format!("reaching {url}"))?;
+            if status.is_success() {
+                let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| anyhow!("WorkOS's answer is not a sign-in"))?;
+                if tokens.refresh_token.is_empty() {
+                    bail!("WorkOS's answer is not a sign-in");
+                }
+                return Ok(tokens);
+            }
+            match serde_json::from_slice::<PollError>(&body).map(|e| e.error).as_deref() {
+                Ok("authorization_pending") => {}
+                Ok("slow_down") => interval += SLOW_DOWN,
+                Ok("access_denied") => bail!("the sign-in was denied"),
+                Ok("expired_token") => bail!("the code expired before the sign-in finished: run vault-login again"),
+                _ => bail!("WorkOS refused the sign-in ({status})"),
+            }
+        }
+    }
+}
+
+/// Why a token was not taken. Fixed words: what the validator says can quote
+/// what it was given.
+fn refusal(error: OidcError) -> anyhow::Error {
+    let why = match error {
+        OidcError::Discovery(_) | OidcError::JwksUnavailable(_) => "WorkOS's keys could not be read",
+        OidcError::WrongIssuer => "it names another issuer",
+        OidcError::WrongAudience => "it is for another client",
+        OidcError::Expired => "it has expired",
+        OidcError::InvalidSignature | OidcError::UnknownKeyId(_) => "WorkOS did not sign it",
+        _ => "it is not a token this tool can read",
+    };
+    anyhow!("the sign-in was refused and nothing was stored: {why}")
+}
+
+/// Runs the flow: asks for a code, has `show` tell the owner, waits for the
+/// answer, and stores it if it is a token for this client and for `owner`, the
+/// WorkOS user id. Otherwise nothing changes on disk. Any sign-in already there
+/// stands.
+pub async fn sign_in(login: &Login, owner: &str, show: impl FnOnce(&Prompt)) -> anyhow::Result<()> {
+    if owner.is_empty() {
+        bail!("no owner: set VAULT_OWNER_USER_ID");
+    }
+    // Before anything is asked of anyone, so a bad setting is not a wasted code.
+    let validator = OidcValidator::new(login.oidc_config()?);
+    let started = Instant::now();
+    let authorization = login.authorize().await?;
+    show(&Prompt {
+        verification_uri: crate::wire::printable(&authorization.verification_uri, 300),
+        user_code: crate::wire::printable(&authorization.user_code, 64),
+        open: openable(&authorization.verification_uri),
+    });
+    let deadline = started + Duration::from_secs(authorization.expires_in.min(LONGEST_WAIT));
+    let tokens = login.poll(&authorization, deadline).await?;
+    let verified = validator.validate_token(&tokens.access_token).await.map_err(refusal)?;
+    if verified.user().user_id() != owner {
+        // Say nothing of who: Menger's client is shared.
+        bail!("the sign-in was refused and nothing was stored: that account is not the owner");
+    }
+    write_tokens(&login.file, &tokens)
 }
 
 #[cfg(test)]
@@ -250,18 +319,30 @@ mod tests {
     }
 
     #[test]
-    fn a_verifier_is_long_enough_and_never_repeats() {
-        let (a, b) = (random().unwrap(), random().unwrap());
-        assert!((43..=128).contains(&a.len()), "RFC 7636: {}", a.len());
-        assert_ne!(*a, *b);
+    fn only_plain_https_on_workos_and_authkit_hosts_may_open() {
+        for good in ["https://workos.com/device", "https://a.workos.com/device", "https://authkit.app/x", "https://a.b.authkit.app/device?x=1"] {
+            assert_eq!(openable(good).as_deref(), Some(good));
+        }
+        for bad in ["http://a.authkit.app/", "https://evilauthkit.app/", "https://authkit.app.evil.example/", "https://a.authkit.app@evil.example/", "https://evil.example\\@a.authkit.app/", "https://x:y@workos.com/", "https://workos.com:444/", "https://192.0.2.1/", "javascript:alert(1)", "a.authkit.app", ""] {
+            assert_eq!(openable(bad), None, "{bad}");
+        }
     }
 
-    #[tokio::test]
-    async fn a_redirect_that_is_not_loopback_is_refused_before_anything_listens() {
-        let args = WorkosArgs { workos_client_id: Some("c".into()), workos_base: WORKOS_API.into(), login_file: Some("/nonexistent/x".into()) };
-        for bad in ["https://127.0.0.1:1/cb", "http://example.com:1/cb", "http://127.0.0.1/cb", "not a url"] {
-            let answer = sign_in(&args.login().unwrap(), LoginRequest { redirect_uri: bad, provider: "authkit" }, |_| {}).await;
-            assert!(answer.is_err(), "{bad}");
+    #[test]
+    fn an_issuer_off_https_is_refused_before_anything_is_asked() {
+        let login = Login::new("c".into(), "http://example.com", "/nonexistent/x".into()).unwrap();
+        assert!(login.oidc_config().is_err());
+        assert!(Login::new("c".into(), WORKOS_API, "/nonexistent/x".into()).unwrap().oidc_config().is_ok());
+    }
+
+    /// The client must check what the server's door will check.
+    #[cfg(feature = "server")]
+    #[test]
+    fn the_check_here_is_the_one_at_the_door() {
+        use plexus_auth_core::adapters::OidcAdapter;
+        for base in [WORKOS_API, "http://localhost:1"] {
+            let login = Login::new("client_x".into(), base, "/nonexistent/x".into()).unwrap();
+            assert_eq!(login.oidc_config().unwrap(), OidcAdapter::workos_config("client_x", Some(base)).unwrap());
         }
     }
 }

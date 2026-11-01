@@ -35,7 +35,7 @@ promise. The ciphertext is ordinary age format: any age implementation opens it.
 |---|---|---|
 | `hyperforge-vault` | the server | Stores ciphertext, moves sealed results, writes the audit log. Has no key. |
 | `vault-approve` | the owner's Mac | Watches requests, asks, checks the manifest, decrypts in process, reading the identity file at each decrypt. `--once` handles one request and exits. `recovery-keygen --out <file>` writes a recovery identity and prints its recipient. `recover <name>` opens one ciphertext with that identity, to stdout only. |
-| `vault-login` | the owner's Mac | Signs the owner in to WorkOS (PKCE, no secret) and keeps the tokens for the two tools around it. |
+| `vault-login` | the owner's Mac | Signs the owner in to WorkOS (device flow: no secret, no callback) and keeps the tokens for the two tools around it. |
 | `vault-encrypt` | the owner's Mac | Encrypts stdin to a recipients file, stores the ciphertext, records its hash in the manifest. |
 | `vault-run` | the caller | Runs a command with the secret in one environment variable. |
 | `vault-get` | the caller | Prints the secret to a pipe; a terminal needs `--allow-terminal`. |
@@ -51,7 +51,9 @@ cargo build -p hyperforge-vault --no-default-features  # the client half: no ser
 
 The Mac only needs the client half, and so does anything that depends on this
 crate to fetch a secret: `default-features = false` gives the `client`, `keys`,
-`manifest` and `wire` modules with no plexus-core, plexus-macros or plexus-transport.
+`login`, `manifest` and `wire` modules with no plexus-core, plexus-macros or plexus-transport.
+It does carry plexus-auth-core, without its `adapters`: `vault-login` checks what WorkOS
+answers with the validator the server uses.
 
 ## Testing
 
@@ -136,8 +138,19 @@ raw request context, so the peer address and headers never reach a method; a che
 "came from loopback" is not possible at this layer. That is why machines hold a
 credential: a random token, of which the server holds only the sha256.
 
-**The owner's token.** `vault-login` signs in as a public client with PKCE; there is no
-secret on this side. synapse's login cannot be reused: it stores an opaque Menger session,
+**The owner's token.** `vault-login` signs in as a public client with WorkOS's device flow:
+it prints a page and a code, the owner enters the code, and it polls. There is no secret on
+this side, no redirect URI, and nothing listens on the Mac. It opens the page itself only
+on plain https to a `workos.com` or `authkit.app` host; any other address is printed, with a
+warning, and left to the owner. Polling keeps to the server's `interval`, stops at its
+`expires_in` or at any answer it does not know, and quotes nothing WorkOS said.
+
+Nothing is stored until the access token has passed the server's own check, through
+`OidcValidator`: WorkOS's signature, issuer and client. Then its subject must be
+`VAULT_OWNER_USER_ID`, since Menger's client is shared. A refused sign-in leaves any
+earlier one in place. A refreshed token is not put through this: the door still checks it.
+
+synapse's login cannot be reused: it stores an opaque Menger session,
 which WorkOS's issuer did not sign. Access tokens are short-lived, and a socket closes when
 its token ends. The approver refreshes on each reconnect and answers each request on a
 connection of its own, so an answer given while the socket closed is not lost. `--once`
@@ -188,9 +201,26 @@ A socket without the owner's token or a machine's credential reaches nothing at 
 - **`purpose` and `caller` are the caller's own words.** The prompt says so.
   The server knows which machine asked and uses that for `result`, but neither the
   prompt nor the audit log shows it yet.
+- **A device code can be phished.** Someone who starts a sign-in of their own and talks the
+  owner into entering its code gets a token for the owner's account on that client.
+  `vault-login` says so each time, but the only check is the owner's attention. A token
+  this tool did not ask for is outside what it can refuse.
 - **`login.json` holds a refresh token** in a 0600 file on the Mac. Two tools refreshing
   in the same instant can race on it, since WorkOS's refresh tokens rotate; `vault-login`
   recovers.
+
+**Production risks from HYPE-17.** Nothing here has met production WorkOS yet.
+
+| Risk | Status |
+|---|---|
+| `http://127.0.0.1:4471/callback` may be refused in production | **Retired.** There is no redirect URI, and no registration to make. |
+| A public client may not be able to exchange a PKCE code | **Retired with PKCE.** Replaced by the next row. |
+| `provider=authkit` was unproven | **Retired.** The device flow takes no provider, and `--provider` is gone. Sign-in happens on the AuthKit page. |
+| Device authorization for this client, with no secret | **Open.** WorkOS documents it for public device clients. Whether Menger's production client allows it is unproven until the first real sign-in. |
+| The issuer and `client_id` claim of a production token | **Open.** Taken from the server's check, itself known from staging. `vault-login` now fails here first, with the reason, and stores nothing. |
+| `verification_uri`'s host | **Open.** The docs show only a placeholder. If production's is not a `workos.com` or `authkit.app` host it is printed, not opened, and sign-in still works. |
+| The refresh request is JSON; the docs show a form | **Open.** Kept as it was. Only a real refresh will show whether WorkOS takes it, about five minutes after sign-in if staging's lifetime holds. |
+| Token lifetime, and that refresh tokens rotate | **Open.** Unchanged, and the code survives either. |
 
 Limits that will stay:
 

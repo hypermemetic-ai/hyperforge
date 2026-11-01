@@ -4,14 +4,17 @@
 
 #[path = "../platform.rs"]
 mod platform;
+#[path = "shared/workos.rs"]
+mod workos;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use plexus_client::ClientEvent;
 use hyperforge_vault::client::{fingerprint, Rpc};
-use hyperforge_vault::login::{Login, WorkosArgs};
+use hyperforge_vault::login::Login;
 use hyperforge_vault::{keys, manifest};
+use workos::WorkosArgs;
 use hyperforge_vault::wire::*;
 use serde_json::{json, Value};
 use std::collections::HashSet;
