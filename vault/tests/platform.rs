@@ -114,3 +114,22 @@ fn the_library_sets_no_process_policy() {
     // client, keys, lib, login, manifest, owner, server, wire.
     assert_eq!(checked, 8);
 }
+
+/// The library is what iOS shares: no command line, and no assumption about
+/// where a home directory is. `login.rs` is handed its path.
+#[test]
+fn the_library_takes_no_cli_types_and_reads_no_home() {
+    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "rs") && path.file_name().unwrap() != "platform.rs" {
+            let text = std::fs::read_to_string(&path).unwrap();
+            for word in ["clap::", "clap(", "arg(", "command(", "\"HOME\""] {
+                assert!(!text.contains(word), "{} says {word}", path.display());
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 8);
+}
