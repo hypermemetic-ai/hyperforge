@@ -56,7 +56,7 @@ async fn call(
     let mut events = Vec::new();
     while let Some(item) = stream.next().await {
         if let PlexusStreamItem::Data { content, .. } = item {
-            if let Ok(event) = serde_json::from_value::<HyperforgeEvent>(content) {
+            if let Ok(event) = serde_json::from_value::<HyperforgeEvent>(content.into_value()) {
                 events.push(event);
             }
         }

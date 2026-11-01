@@ -17,7 +17,7 @@ async fn drain_hyperforge_events(service: &DynamicService, method: &str, params:
     let mut events = Vec::new();
     while let Some(item) = stream.next().await {
         if let PlexusStreamItem::Data { content, .. } = item {
-            if let Ok(event) = serde_json::from_value::<HyperforgeEvent>(content) {
+            if let Ok(event) = serde_json::from_value::<HyperforgeEvent>(content.into_value()) {
                 events.push(event);
             }
         }
@@ -48,7 +48,7 @@ async fn test_hyperforge_as_plugin() {
     while let Some(item) = stream.next().await {
         if let plexus_core::plexus::PlexusStreamItem::Data { content, .. } = item {
             if let Ok(HyperforgeEvent::Status { version, description }) =
-                serde_json::from_value::<HyperforgeEvent>(content)
+                serde_json::from_value::<HyperforgeEvent>(content.into_value())
             {
                 assert_eq!(version, env!("CARGO_PKG_VERSION"));
                 assert!(description.contains("FORGE4"));
@@ -864,7 +864,7 @@ async fn test_repo_set_transport_unsupported_value_rejected_at_parse() {
             let mut events = Vec::new();
             while let Some(item) = stream.next().await {
                 if let PlexusStreamItem::Data { content, .. } = item {
-                    if let Ok(ev) = serde_json::from_value::<HyperforgeEvent>(content) {
+                    if let Ok(ev) = serde_json::from_value::<HyperforgeEvent>(content.into_value()) {
                         events.push(ev);
                     }
                 }

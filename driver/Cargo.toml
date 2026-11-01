@@ -12,8 +12,8 @@ publish = false
 # gates on without being told. `--no-default-features` is the wasm-safe build:
 # the types, the trait and the client, no plexus-core in the tree.
 #
-# The plexus 0.6 line from crates.io: MACRO-13's trait form is in
-# plexus-macros 0.6.1.
+# The plexus 0.7 line from crates.io; MACRO-13's trait form has been in
+# plexus-macros since 0.6.1.
 [features]
 default = ["server"]
 server = [
@@ -26,13 +26,13 @@ server = [
 ]
 
 [dependencies]
-plexus-macros = "0.6.1"
-plexus-client = "0.6.1"
+plexus-macros = "0.7.0"
+plexus-client = "0.7.0"
 serde = { version = "1", features = ["derive"] }
 futures = "0.3"
 schemars = { version = "1.1", features = ["derive"] }
 
-plexus-core = { version = "0.6.1", optional = true }
+plexus-core = { version = "0.7.0", optional = true }
 async-trait = { version = "0.1", optional = true }
 jsonrpsee = { version = "0.26", features = ["server", "macros"], optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
@@ -42,10 +42,10 @@ serde_json = { version = "1", optional = true }
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
-plexus-core = "0.6.1"
+plexus-core = "0.7.0"
 async-stream = "0.3"
-plexus-client = { version = "0.6.1", features = ["ws-native"] }
-plexus-transport = "0.5.1"
+plexus-client = { version = "0.7.0", features = ["ws-native"] }
+plexus-transport = "0.6.0"
 
 [[example]]
 name = "toy_service"

@@ -25,7 +25,7 @@ async fn call(service: &HyperforgeService, method: &str, params: Value) -> Vec<V
     let mut out = Vec::new();
     while let Some(item) = stream.next().await {
         if let PlexusStreamItem::Data { content, .. } = item {
-            out.push(content);
+            out.push(content.into_value());
         }
     }
     out

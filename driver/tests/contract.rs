@@ -72,7 +72,7 @@ async fn data(service: &DynamicService, method: &str, params: Value) -> Vec<Valu
         .expect("routed")
         .filter_map(|item| async move {
             match item {
-                PlexusStreamItem::Data { content, .. } => Some(content),
+                PlexusStreamItem::Data { content, .. } => Some(content.into_value()),
                 PlexusStreamItem::Error { message, .. } => panic!("error item: {message}"),
                 _ => None,
             }
