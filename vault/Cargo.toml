@@ -46,6 +46,11 @@ name = "owner_seam"
 path = "tests/owner_seam.rs"
 required-features = ["server"]
 
+[[test]]
+name = "gate"
+path = "tests/gate.rs"
+required-features = ["server"]
+
 [features]
 default = ["server"]
 server = [
@@ -97,3 +102,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 [dev-dependencies]
 tempfile = "3"
 base64 = "0.22"
+jsonwebtoken = "9"

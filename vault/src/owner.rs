@@ -47,6 +47,11 @@ impl OwnerGate {
         OwnerGate { owner: Some(owner) }
     }
 
+    /// Whether anyone has said who the owner is.
+    pub fn is_configured(&self) -> bool {
+        self.owner.is_some()
+    }
+
     /// The proof, if `caller` is the owner. Anything less is a refusal: no
     /// configured owner, no identity on the connection, an identity with no
     /// principal, or somebody else's.
