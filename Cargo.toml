@@ -9,6 +9,8 @@ license = "MIT"
 # of this workspace (HYPERFORGE-7 `contract`).
 [workspace]
 members = [".", "driver", "vault"]
+# Unreviewed spike source with its own workspace: see its README.
+exclude = ["vault/spike"]
 
 [lib]
 name = "hyperforge"

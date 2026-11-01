@@ -1,0 +1,17 @@
+[package]
+name = "p256tag-core"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+age = { version = "=0.12.1", default-features = false }
+age-core = "=0.12.0"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+bech32 = "0.11"
+hkdf = "0.12"
+p256 = { version = "0.13", features = ["ecdh"] }
+sha2 = "0.10"
+zeroize = "1"
+[dev-dependencies]
+hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
