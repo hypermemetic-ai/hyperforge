@@ -1472,3 +1472,421 @@ fn recovery_keygen_never_overwrites_a_key() {
     assert!(out.stdout.is_empty(), "printed a recipient for no key");
     assert_eq!(fs::read(&w.recovery).unwrap(), before);
 }
+
+// ---- Memory: what the owner's tools keep after they are done. ----
+
+/// Tells a binary built with `memory-scan-test` to stay dumpable, so these tests
+/// can read its memory. Any other build has no such switch.
+#[cfg(feature = "memory-scan-test")]
+const KEEP_DUMPABLE: &str = "VAULT_TEST_KEEP_DUMPABLE";
+
+/// How long a released value was seen to outlive its release (HYPE-22).
+#[cfg(feature = "memory-scan-test")]
+const AFTER_RELEASE: Duration = Duration::from_millis(300);
+#[cfg(feature = "memory-scan-test")]
+const RELEASES: usize = 3;
+
+/// One value in every age chunk, so a chunk left anywhere is a hit.
+#[cfg(feature = "memory-scan-test")]
+fn across_chunks(canary: &str) -> Vec<u8> {
+    let mut value = Vec::new();
+    while value.len() < 300_000 {
+        value.extend_from_slice(canary.as_bytes());
+        value.resize(value.len() + 20_000, b'.');
+    }
+    value
+}
+
+/// A port that takes the connection and never speaks: `vault-encrypt` stops
+/// there, its encrypting done, for as long as a test wants to look at it.
+fn silent_port() -> (std::net::TcpListener, String) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    (listener, url)
+}
+
+fn set_memlock_limit_to_zero(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setrlimit is async-signal-safe and `none` is on this stack.
+    unsafe {
+        command.pre_exec(|| {
+            let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            if libc::setrlimit(libc::RLIMIT_MEMLOCK, &none) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+/// `root` is not bound by RLIMIT_MEMLOCK, so the limit proves nothing there.
+fn limits_bind_this_user() -> bool {
+    // SAFETY: geteuid takes nothing and cannot fail.
+    unsafe { libc::geteuid() != 0 }
+}
+
+fn proc_field(pid: u32, file: &str, field: &str) -> String {
+    let text = fs::read_to_string(format!("/proc/{pid}/{file}")).unwrap();
+    text.lines().find(|l| l.starts_with(field)).unwrap_or_else(|| panic!("no {field} in {file}: {text}")).to_string()
+}
+
+fn assert_cannot_be_dumped(pid: u32) {
+    let core = proc_field(pid, "limits", "Max core file size");
+    assert_eq!(core.split_whitespace().nth(4), Some("0"), "{core}");
+    let denied = fs::File::open(format!("/proc/{pid}/mem")).unwrap_err();
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied, "the process is dumpable: {denied}");
+}
+
+fn assert_memory_is_locked(pid: u32) {
+    let line = proc_field(pid, "status", "VmLck");
+    let locked: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    assert!(locked > 0, "nothing is locked: {line}");
+}
+
+/// Where a freed block lands is the allocator's business, and one look at one
+/// release misses it about one time in five on this code. So: a look after each
+/// of several releases, in one process, any hit failing.
+#[cfg(feature = "memory-scan-test")]
+fn a_released_value_leaves_the_approvers_memory(w: &World, value: &[u8]) {
+    let _server = w.server();
+    assert!(w.encrypt_value("s", value).status.success());
+    let mut command = w.command(APPROVE);
+    command.env_remove("PLEXUS_WS_TRACE").env(KEEP_DUMPABLE, "1");
+    let mut approver = w.approver_from(command, &w.owner);
+    let key = fs::read_to_string(&w.owner).unwrap();
+    let key = key.lines().find(|l| l.starts_with("AGE-SECRET-KEY-1")).unwrap().to_string();
+    for round in 1..=RELEASES {
+        // vault-get: a long value is past what an environment variable can hold.
+        let caller = w.command(GET).args(["s", "--purpose", "the scan", "--poll-ms", "100"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        approver.answer("y");
+        assert_eq!(caller.wait_with_output().unwrap().stdout, value, "release {round} itself");
+        wait_until("the approver to report", SHELL_WAIT, || approver.text().matches("approved and sealed").count() == round);
+        std::thread::sleep(AFTER_RELEASE);
+
+        let pid = approver.child.id();
+        // Control: the scan reads this heap. The credential is held for as long
+        // as the approver runs.
+        assert!(memory_contains(pid, w.owner_credential.as_bytes()), "control: the scan must see the live heap");
+        assert!(!memory_contains(pid, w.canary.as_bytes()), "the value outlived release {round}");
+        assert!(!memory_contains(pid, key.as_bytes()), "the identity outlived release {round}");
+    }
+}
+
+#[test]
+#[cfg(feature = "memory-scan-test")]
+fn a_short_value_is_gone_from_the_approver_after_its_release() {
+    let w = World::new();
+    a_released_value_leaves_the_approvers_memory(&w, &w.value);
+}
+
+#[test]
+#[cfg(feature = "memory-scan-test")]
+fn every_chunk_of_a_long_value_is_gone_from_the_approver_after_its_release() {
+    let w = World::new();
+    a_released_value_leaves_the_approvers_memory(&w, &across_chunks(&w.canary));
+}
+
+#[cfg(feature = "memory-scan-test")]
+fn the_encrypter_forgets_what_it_encrypted(w: &World, value: &[u8]) {
+    let (listener, url) = silent_port();
+    let name = format!("scan-{}", &sha_hex(w.canary.as_bytes())[..16]);
+    let mut child = w
+        .command(ENCRYPT)
+        .env("VAULT_URL", url)
+        .env(KEEP_DUMPABLE, "1")
+        .arg(&name)
+        .arg(&w.recipients)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(value).unwrap();
+    drop(stdin);
+    // It connects only once the ciphertext is finished.
+    let (_held_open, _) = listener.accept().unwrap();
+    std::thread::sleep(AFTER_RELEASE);
+    let found = memory_contains(child.id(), w.canary.as_bytes());
+    let control = memory_contains(child.id(), name.as_bytes());
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(control, "control: the scan must see the live process");
+    assert!(!found, "the plaintext outlived the encryption");
+}
+
+#[test]
+#[cfg(feature = "memory-scan-test")]
+fn a_short_value_is_gone_from_the_encrypter_once_encrypted() {
+    let w = World::new();
+    the_encrypter_forgets_what_it_encrypted(&w, &w.value);
+}
+
+#[test]
+#[cfg(feature = "memory-scan-test")]
+fn every_chunk_of_a_long_value_is_gone_from_the_encrypter_once_encrypted() {
+    let w = World::new();
+    the_encrypter_forgets_what_it_encrypted(&w, &across_chunks(&w.canary));
+}
+
+/// No hook set: what a real run gets. A core piped to a handler ignores
+/// RLIMIT_CORE, so the limit alone is not enough, and being undumpable also
+/// shuts `/proc/<pid>/mem` to this user's other processes.
+#[test]
+fn the_owners_tools_cannot_be_dumped_and_lock_their_memory() {
+    let w = World::new();
+    let _server = w.server();
+    let mut approver = w.approver();
+    wait_until("the approver to watch", SHELL_WAIT, || approver.text().contains("watching"));
+    assert_cannot_be_dumped(approver.child.id());
+    assert_memory_is_locked(approver.child.id());
+    approver.child.kill().unwrap();
+
+    let (listener, url) = silent_port();
+    let mut child = w.command(ENCRYPT).env("VAULT_URL", url).arg("s").arg(&w.recipients).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(&w.value).unwrap();
+    let (_held_open, _) = listener.accept().unwrap();
+    assert_cannot_be_dumped(child.id());
+    assert_memory_is_locked(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn memory_that_cannot_be_locked_is_said_out_loud() {
+    if !limits_bind_this_user() {
+        return;
+    }
+    let w = World::new();
+    let _server = w.server();
+    assert!(w.encrypt("first").status.success());
+
+    let mut encrypter = w.command(ENCRYPT);
+    set_memlock_limit_to_zero(&mut encrypter);
+    let mut child = encrypter.arg("s").arg(&w.recipients).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(&w.value).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("NOT locked"), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let mut approver = w.command(APPROVE);
+    set_memlock_limit_to_zero(&mut approver);
+    approver.env_remove("PLEXUS_WS_TRACE");
+    let mut approver = w.approver_from(approver, &w.owner);
+    wait_until("the warning", SHELL_WAIT, || approver.text().contains("NOT locked"));
+    let done = w.root.join("hash");
+    let mut caller = w.run_cmd("s", "unlocked", &w.hash_script(&done));
+    approver.answer("y");
+    assert!(caller.wait().success(), "the default is to warn and go on");
+}
+
+#[test]
+fn require_memory_lock_stops_before_any_value_is_touched() {
+    if !limits_bind_this_user() {
+        return;
+    }
+    let w = World::new();
+    let _server = w.server();
+
+    let mut encrypter = w.command(ENCRYPT);
+    set_memlock_limit_to_zero(&mut encrypter);
+    let mut child = encrypter.arg("s").arg(&w.recipients).arg("--require-memory-lock").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // It may exit without reading this.
+    let _ = child.stdin.take().unwrap().write_all(&w.value);
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not locked"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!w.secret_file("s").exists());
+    assert!(!w.manifest.exists());
+
+    assert!(w.encrypt("t").status.success());
+    let mut approver = w.command(APPROVE);
+    set_memlock_limit_to_zero(&mut approver);
+    let out = approver.arg("--identity").arg(&w.owner).arg("--require-memory-lock").stdin(Stdio::null()).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not locked"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!contains(&out.stdout, b"watching"), "it connected: {}", String::from_utf8_lossy(&out.stdout));
+}
+
+// ---- Recovery: the Mac is gone; the offline key, a copy of the manifest and a
+// ---- copy of the ciphertext are all there is.
+
+struct Offline {
+    dir: PathBuf,
+    ciphertext: PathBuf,
+    key: PathBuf,
+    manifest: PathBuf,
+}
+
+impl World {
+    /// What the owner carries to another machine for `name`.
+    fn offline(&self, name: &str) -> Offline {
+        let dir = self.root.join("offline");
+        fs::create_dir_all(&dir).unwrap();
+        let (ciphertext, key, manifest) = (dir.join(format!("{name}.age")), dir.join("recovery.key"), dir.join("manifest.json"));
+        fs::copy(self.secret_file(name), &ciphertext).unwrap();
+        fs::copy(&self.recovery, &key).unwrap();
+        fs::copy(&self.manifest, &manifest).unwrap();
+        Offline { dir, ciphertext, key, manifest }
+    }
+
+    fn recover(&self, name: &str, o: &Offline) -> Command {
+        let mut command = self.command(APPROVE);
+        command.env_remove("VAULT_MANIFEST").arg("recover").arg(name).arg("--ciphertext").arg(&o.ciphertext).arg("--identity").arg(&o.key).arg("--manifest").arg(&o.manifest);
+        command
+    }
+}
+
+fn refused_with(out: &std::process::Output, word: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "it succeeded: {stderr}");
+    assert!(out.stdout.is_empty(), "something reached stdout");
+    assert!(stderr.contains(word), "{stderr}");
+}
+
+/// The whole of it through our own binaries, with an empty PATH.
+#[test]
+fn a_full_recovery_needs_no_age_tool() {
+    let w = World::new();
+    let empty = w.root.join("empty-path");
+    fs::create_dir_all(&empty).unwrap();
+    let no_tool = |mut c: Command| {
+        c.env_clear().env("HOME", &w.home).env("PATH", &empty);
+        c
+    };
+    // Control: nothing on this PATH.
+    let mut control = no_tool(Command::new("/bin/sh"));
+    assert!(!control.args(["-c", "command -v age || command -v age-keygen || command -v rage"]).status().unwrap().success());
+
+    // Enrolled the way ENROL.md says, the recovery key by our own keygen.
+    let key = w.root.join("made-for-recovery.key");
+    let mut keygen = no_tool(Command::new(APPROVE));
+    let made = keygen.arg("recovery-keygen").arg("--out").arg(&key).output().unwrap();
+    assert!(made.status.success());
+    let recipient = String::from_utf8(made.stdout).unwrap();
+    fs::write(&w.recipients, format!("{}\n{recipient}", keygen_line(&w.owner))).unwrap();
+    {
+        let _server = w.server();
+        assert!(w.encrypt("s").status.success());
+    }
+    // The server and the Mac are gone.
+    fs::remove_file(&w.owner).unwrap();
+    let mut o = w.offline("s");
+    o.key = key;
+    let before: Vec<_> = fs::read_dir(&o.dir).unwrap().map(|e| e.unwrap().path()).collect();
+
+    let mut recover = no_tool(Command::new(APPROVE));
+    let out = recover.arg("recover").arg("s").arg("--ciphertext").arg(&o.ciphertext).arg("--identity").arg(&o.key).arg("--manifest").arg(&o.manifest).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.stdout, w.value);
+    assert!(!contains(&out.stderr, w.canary.as_bytes()));
+
+    let after: Vec<_> = fs::read_dir(&o.dir).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(after, before, "recovery wrote a file");
+    w.assert_no_age_ran();
+    assert_eq!(w.leaks(&[&w.state, &w.logs, &w.home, &o.dir]), Vec::<String>::new());
+}
+
+/// A recipient for a key that exists only in a test's public half.
+fn keygen_line(path: &Path) -> String {
+    let text = fs::read_to_string(path).unwrap();
+    text.lines().find_map(|l| l.strip_prefix("# public key: ")).unwrap().to_string()
+}
+
+#[test]
+fn recovery_offers_no_way_to_write_a_file() {
+    let w = World::new();
+    let help = w.command(APPROVE).args(["recover", "--help"]).output().unwrap();
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(help.status.success() && text.contains("--ciphertext"), "{text}");
+    for flag in ["--out", "--output", "-o "] {
+        assert!(!text.contains(flag), "{text}");
+    }
+}
+
+#[test]
+fn recovery_refuses_a_swapped_ciphertext_before_the_key_is_read() {
+    let w = World::new();
+    {
+        let _server = w.server();
+        assert!(w.encrypt("a").status.success());
+        assert!(w.encrypt_value("b", b"the other secret\n").status.success());
+    }
+    let o = w.offline("a");
+    fs::copy(w.secret_file("b"), &o.ciphertext).unwrap();
+    // Control: it opens, so only the hash can stop it.
+    assert_eq!(open_with_key_file(&o.key, &fs::read(&o.ciphertext).unwrap()).unwrap(), b"the other secret\n");
+    let witness = KeyWitness::new(&w.root.join("recovery-fifo.key"), fs::read(&w.recovery).unwrap());
+    let out = w.recover("a", &Offline { key: witness.path.clone(), ..o }).output().unwrap();
+    refused_with(&out, "does not match");
+    assert_eq!(witness.reads(), 0, "the key was read for a ciphertext the manifest does not know");
+}
+
+#[test]
+fn recovery_refuses_a_name_or_a_manifest_it_cannot_vouch_for() {
+    let w = World::new();
+    {
+        let _server = w.server();
+        assert!(w.encrypt("s").status.success());
+    }
+    let o = w.offline("s");
+    refused_with(&w.recover("not-enrolled", &o).output().unwrap(), "no entry");
+    fs::remove_file(&o.manifest).unwrap();
+    refused_with(&w.recover("s", &o).output().unwrap(), "reading the manifest");
+}
+
+#[test]
+fn recovery_refuses_a_wrong_key_and_prints_no_part_of_a_truncated_value() {
+    use age::armor::{ArmoredReader, ArmoredWriter, Format};
+    let w = World::new();
+    let value = vec![b'v'; 200_000];
+    {
+        let _server = w.server();
+        assert!(w.encrypt_value("s", &value).status.success());
+    }
+    let mut o = w.offline("s");
+    let wrong = w.root.join("wrong.key");
+    keygen(&wrong);
+    let right = std::mem::replace(&mut o.key, wrong);
+    refused_with(&w.recover("s", &o).output().unwrap(), "does not open");
+    o.key = right;
+
+    // Cut mid-payload, the header good, and the hash of what was cut on record:
+    // only the last chunk's tag can tell.
+    let armored = fs::read(&o.ciphertext).unwrap();
+    let mut binary = Vec::new();
+    ArmoredReader::new(&armored[..]).read_to_end(&mut binary).unwrap();
+    binary.truncate(binary.len() - 100_000);
+    let mut writer = ArmoredWriter::wrap_output(Vec::new(), Format::AsciiArmor).unwrap();
+    writer.write_all(&binary).unwrap();
+    let cut = String::from_utf8(writer.finish().unwrap()).unwrap();
+    fs::write(&o.ciphertext, &cut).unwrap();
+    hyperforge_vault::manifest::record(&o.manifest, "s", &cut).unwrap();
+    refused_with(&w.recover("s", &o).output().unwrap(), "reading");
+}
+
+#[test]
+fn recovery_refuses_a_terminal_unless_told() {
+    let w = World::new();
+    {
+        let _server = w.server();
+        assert!(w.encrypt("s").status.success());
+    }
+    let o = w.offline("s");
+    let py = "import pty,sys; sys.exit(pty.spawn(sys.argv[1:]) >> 8)";
+    let args = |extra: &[&str]| {
+        let mut command = w.command("/usr/bin/python3");
+        command.args(["-I", "-c", py, APPROVE, "recover", "s"]).arg("--ciphertext").arg(&o.ciphertext).arg("--identity").arg(&o.key).arg("--manifest").arg(&o.manifest).args(extra);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+    };
+    let refused = args(&[]).output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("terminal"), "{}", String::from_utf8_lossy(&refused.stdout));
+    assert!(!contains(&refused.stdout, w.canary.as_bytes()));
+
+    let allowed = args(&["--allow-terminal"]).output().unwrap();
+    assert!(allowed.status.success(), "{}", String::from_utf8_lossy(&allowed.stdout));
+    assert!(contains(&allowed.stdout, w.canary.as_bytes()));
+}

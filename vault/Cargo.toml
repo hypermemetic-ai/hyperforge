@@ -65,6 +65,10 @@ server = [
     "dep:tracing",
     "dep:tracing-subscriber",
 ]
+# Keeps vault-approve and vault-encrypt dumpable when VAULT_TEST_KEEP_DUMPABLE is
+# set, so the test suite can read their memory. For tests only: without this
+# feature the switch does not exist. Never build a real tool with it.
+memory-scan-test = []
 
 [dependencies]
 # The client half of plexus; `ws-native` is its WebSocket.
