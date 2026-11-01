@@ -83,16 +83,23 @@ public func se_public_key(
   } catch { return code(error) }
 }
 
-/// 1 if the key agrees with the interface forbidden, which a gated key cannot do,
-/// and 0 for any refusal. Against a key made for this and dropped, so the secret
-/// that comes of it means nothing. This cannot prompt.
-@_cdecl("se_opens_unattended")
-public func se_opens_unattended(_ blob: UnsafePointer<UInt8>, _ length: Int) -> Int32 {
+/// A key agreement with the interface forbidden, which cannot prompt, against a key
+/// made for this and dropped, so the secret that comes of it means nothing. 1: it
+/// worked, so nothing guards this key. 0: refused because the owner is needed, which
+/// is what a gated key that this enclave can use says. Anything else is the refusal's
+/// code, or -103 if it had none: this enclave cannot use the key at all.
+@_cdecl("se_unattended")
+public func se_unattended(_ blob: UnsafePointer<UInt8>, _ length: Int) -> Int32 {
   do {
     let key = try load(blob, length, forbiddingInterface())
     _ = try key.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PrivateKey().publicKey)
     return 1
-  } catch { return 0 }
+  } catch {
+    let e = error as NSError
+    if e.domain == LAErrorDomain && e.code == LAError.Code.notInteractive.rawValue { return 0 }
+    let c = code(error)
+    return c == 0 || c == 1 ? -103 : c
+  }
 }
 
 /// Fires Touch ID.

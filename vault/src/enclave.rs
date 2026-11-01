@@ -15,9 +15,12 @@
 //!   format is DER and undocumented, seen in macOS 14 keys of both kinds: anything
 //!   that does not read as exactly one `cbio` constraint is refused, so a change
 //!   of format stops the key, and never passes it.
-//! - [`Hardware::opens_unattended`] asks the enclave itself, with the interface
-//!   forbidden, so it cannot prompt. That says the gate is *enforced*: a blob
-//!   altered to claim `cbio` over a key that does not need it still fails here.
+//! - [`Hardware::unattended`] asks the enclave itself, with the interface forbidden,
+//!   so it cannot prompt. That says the gate is *enforced*, and that this enclave can
+//!   use the key at all: only [`Unattended::WantsTheOwner`] passes. On macOS 14 an
+//!   ungated key opens, a gated one says `LocalAuthentication -1004`, and a damaged
+//!   blob, or an ungated key with `cbio` spliced into its access control, says
+//!   `CryptoTokenKit -3`: the blob loads, and the enclave rejects it at use.
 //!
 //! There is no way to ask for a key without the gate: [`Hardware::create`] takes
 //! no such choice, and neither does the shim beneath it.
@@ -34,6 +37,20 @@ const IDENTITY_HRP: Hrp = Hrp::parse_unchecked("age-vault-enclave-");
 /// The largest blob the shim hands back, and so the largest one is read.
 const MAX_BLOB: usize = 4096;
 
+/// A key agreement tried with the interface forbidden.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Unattended {
+    /// It worked: there is no gate.
+    Opened,
+    /// Refused for want of the owner: the gate is there, and this is its key.
+    WantsTheOwner,
+    /// Refused for another reason, with the platform's code. Not this enclave's
+    /// key, or a damaged one, or one that claims what it is not.
+    Failed(i32),
+    /// There is no enclave to ask.
+    NoEnclave,
+}
+
 /// What holds the keys. [`ThisMachine`] is the only implementation that ships;
 /// the tests bring a software one, which no binary can name.
 pub trait Hardware: Sync {
@@ -41,8 +58,8 @@ pub trait Hardware: Sync {
     fn create(&self) -> anyhow::Result<Zeroizing<Vec<u8>>>;
     /// Never prompts.
     fn public_key(&self, blob: &[u8]) -> anyhow::Result<[u8; 65]>;
-    /// Whether this key agrees with nobody there to approve it. Never prompts.
-    fn opens_unattended(&self, blob: &[u8]) -> anyhow::Result<bool>;
+    /// What this key does with nobody there to approve it. Never prompts.
+    fn unattended(&self, blob: &[u8]) -> Unattended;
     /// Fires Touch ID. `Err` is a platform code.
     fn ecdh(&self, blob: &[u8], peer: &[u8; 65]) -> Result<Zeroizing<[u8; 32]>, i32>;
 }
@@ -132,8 +149,11 @@ impl GatedKey {
         if !requires_current_biometry(&blob) {
             bail!("this enclave key is not bound to the current fingerprints, and is refused");
         }
-        if hardware.opens_unattended(&blob).context("asking the enclave about this key")? {
-            bail!("this enclave key works without Touch ID, and is refused");
+        match hardware.unattended(&blob) {
+            Unattended::WantsTheOwner => {}
+            Unattended::Opened => bail!("this enclave key works without Touch ID, and is refused"),
+            Unattended::NoEnclave => bail!("this build has no Secure Enclave"),
+            Unattended::Failed(code) => bail!("the enclave cannot use this key (code {code}): it is refused. It may be another Mac's, or damaged"),
         }
         let public = hardware.public_key(&blob)?;
         Ok(GatedKey { hardware, blob, public })
@@ -196,8 +216,8 @@ impl Hardware for ThisMachine {
         bail!("this build has no Secure Enclave")
     }
 
-    fn opens_unattended(&self, _: &[u8]) -> anyhow::Result<bool> {
-        bail!("this build has no Secure Enclave")
+    fn unattended(&self, _: &[u8]) -> Unattended {
+        Unattended::NoEnclave
     }
 
     fn ecdh(&self, _: &[u8], _: &[u8; 65]) -> Result<Zeroizing<[u8; 32]>, i32> {
@@ -211,7 +231,7 @@ mod shim {
         pub fn se_available() -> i32;
         pub fn se_create(blob: *mut u8, capacity: usize, length: *mut usize) -> i32;
         pub fn se_public_key(blob: *const u8, length: usize, public: *mut u8) -> i32;
-        pub fn se_opens_unattended(blob: *const u8, length: usize) -> i32;
+        pub fn se_unattended(blob: *const u8, length: usize) -> i32;
         pub fn se_ecdh(blob: *const u8, length: usize, peer: *const u8, out: *mut u8) -> i32;
         pub fn se_cancel();
     }
@@ -239,14 +259,18 @@ impl Hardware for ThisMachine {
         // SAFETY: `blob` is live for its length, and `public` holds 65 bytes.
         let code = unsafe { shim::se_public_key(blob.as_ptr(), blob.len(), public.as_mut_ptr()) };
         if code != 0 {
-            bail!("the enclave cannot read this key (code {code}): it may be another Mac's");
+            bail!("the enclave cannot read this key (code {code}): it may be another Mac's, or damaged");
         }
         Ok(public)
     }
 
-    fn opens_unattended(&self, blob: &[u8]) -> anyhow::Result<bool> {
+    fn unattended(&self, blob: &[u8]) -> Unattended {
         // SAFETY: `blob` is live for its length.
-        Ok(unsafe { shim::se_opens_unattended(blob.as_ptr(), blob.len()) } != 0)
+        match unsafe { shim::se_unattended(blob.as_ptr(), blob.len()) } {
+            0 => Unattended::WantsTheOwner,
+            1 => Unattended::Opened,
+            code => Unattended::Failed(code),
+        }
     }
 
     fn ecdh(&self, blob: &[u8], peer: &[u8; 65]) -> Result<Zeroizing<[u8; 32]>, i32> {

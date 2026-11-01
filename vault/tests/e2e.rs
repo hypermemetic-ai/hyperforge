@@ -1,6 +1,7 @@
 //! End to end: the real binaries over loopback. No age CLI: an `age` on the
 //! tools' PATH records that it ran, and [`World::assert_no_age_ran`] fails on
-//! it. A plain software age identity stands in for the Secure Enclave key. Every test has
+//! it. A plain software age identity stands in for the Secure Enclave key, but for
+//! [`a_real_enclave_round_trip`], which is run by hand. Every test has
 //! a private HOME, a clean environment and its own state directory, and every
 //! process is stopped by its own handle.
 
@@ -1573,14 +1574,47 @@ fn an_enclave_recipient_encrypts_here_and_an_enclave_identity_is_refused_here() 
     let request = request_raw(&w, "s", "no enclave here", &public);
     approver.answer("y");
     wait_until("the approver to refuse", SHELL_WAIT, || approver.text().contains("denied"));
-    assert!(approver.text().contains("no Secure Enclave") || approver.text().contains("refused"), "{}", approver.text());
+    assert!(approver.text().contains("not sealed"), "{}", approver.text());
     assert_eq!(rpc1(&w, "result", json!({"id": request}))["status"], "denied");
 }
 
-/// A well-formed line of the enclave's format that opens nothing.
+/// A well-formed line of the enclave's format, with no gate and no key behind it.
 #[cfg(not(target_os = "macos"))]
 fn bech32_identity() -> String {
     age_core::primitives::bech32_encode(bech32::Hrp::parse_unchecked("age-vault-enclave-"), &[4, 1, 0]).to_uppercase()
+}
+
+/// The real enclave, the real tools, and a real finger: only a person can run this.
+/// The server is this test's and the WorkOS it signs in to is the fake one, so no
+/// deployed vault and no login are needed, and the key dies with the temporary
+/// directory. See ENROL.md, step 1.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "fires Touch ID: run by hand, see ENROL.md"]
+fn a_real_enclave_round_trip() {
+    let w = World::new();
+    let _server = w.server();
+    let identity = w.root.join("owner.identity");
+    let made = w.command(APPROVE).arg("enrol").arg("--out").arg(&identity).output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let recipient = String::from_utf8(made.stdout).unwrap();
+    let checked = w.command(APPROVE).arg("enrol-check").arg("--identity").arg(&identity).output().unwrap();
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    assert_eq!(String::from_utf8(checked.stdout).unwrap(), recipient);
+
+    fs::write(&w.recipients, format!("{recipient}{}\n", keygen_line(&w.recovery))).unwrap();
+    assert!(w.encrypt("s").status.success());
+    let mut approver = w.approver_once_with(&identity);
+    let (one_time, public) = new_key();
+    let request = request_raw(&w, "s", "a real enclave round trip", &public);
+    eprintln!("Touch ID: macOS will ask to \"open a secret in the vault\". Use your finger.");
+    approver.answer("y");
+    wait_until("the approver to finish", Duration::from_secs(150), || approver.child.try_wait().unwrap().is_some());
+    assert!(approver.text().contains("approved and sealed"), "{}", approver.text());
+    let answer = rpc1(&w, "result", json!({"id": request}));
+    assert_eq!(open(&one_time, answer["sealed"].as_str().unwrap()).unwrap(), w.value);
+    w.assert_no_age_ran();
+    eprintln!("PASS: encrypted by vault-encrypt, opened through Touch ID by vault-approve");
 }
 
 #[test]

@@ -4,7 +4,7 @@
 #[path = "support/soft_enclave.rs"]
 mod soft_enclave;
 
-use hyperforge_vault::enclave::GatedKey;
+use hyperforge_vault::enclave::{GatedKey, Unattended};
 use hyperforge_vault::keys::{self, KeyFormat, SecureEnclave, X25519};
 use soft_enclave::{Access, SoftEnclave};
 use std::os::unix::fs::PermissionsExt;
@@ -101,7 +101,7 @@ fn a_secret_for_someone_else_never_fires_touch_id() {
 
 #[test]
 fn a_cancelled_touch_id_gives_no_seal() {
-    let key = enrolled(SoftEnclave::new(Access::CurrentBiometry, false, Some(-2)));
+    let key = enrolled(SoftEnclave::new(Access::CurrentBiometry, Unattended::WantsTheOwner, Some(-2)));
     let f = formats(key.hardware);
     let f = refs(&f);
     let recipients = keys::parse_recipients(&key.recipient, &f).unwrap();
@@ -114,7 +114,7 @@ fn a_cancelled_touch_id_gives_no_seal() {
 /// `GatedKey` and the format are the only way from a line to the hardware.
 #[test]
 fn a_key_with_no_gate_is_refused_before_touch_id() {
-    let hardware = SoftEnclave::new(Access::Nothing, true, None);
+    let hardware = SoftEnclave::new(Access::Nothing, Unattended::Opened, None);
     assert!(!hyperforge_vault::enclave::requires_current_biometry(&hardware.blob()));
     let error = GatedKey::open(hardware, Zeroizing::new(hardware.blob())).err().unwrap();
     assert!(error.to_string().contains("refused"), "{error}");
@@ -132,14 +132,26 @@ fn a_key_with_no_gate_is_refused_before_touch_id() {
 /// and the enclave is believed.
 #[test]
 fn a_key_the_enclave_opens_unattended_is_refused_whatever_it_claims() {
-    let hardware = SoftEnclave::new(Access::CurrentBiometry, true, None);
+    let hardware = SoftEnclave::new(Access::CurrentBiometry, Unattended::Opened, None);
     let error = GatedKey::open(hardware, Zeroizing::new(hardware.blob())).err().unwrap();
     assert!(error.to_string().contains("without Touch ID"), "{error}");
 }
 
+/// A damaged blob, and an ungated key with `cbio` spliced in, both load and both
+/// read as gated. Only the enclave's refusal tells them from a real one: on macOS 14
+/// it says `CryptoTokenKit -3` to both, where a real one says it needs the owner.
+#[test]
+fn a_key_the_enclave_cannot_use_is_refused_however_it_reads() {
+    let hardware = SoftEnclave::new(Access::CurrentBiometry, Unattended::Failed(-3), None);
+    assert!(hyperforge_vault::enclave::requires_current_biometry(&hardware.blob()));
+    let error = GatedKey::open(hardware, Zeroizing::new(hardware.blob())).err().unwrap();
+    assert!(error.to_string().contains("cannot use this key"), "{error}");
+    assert_eq!(hardware.prompts(), 0);
+}
+
 #[test]
 fn enrolment_refuses_a_key_that_came_back_ungated_and_leaves_no_file() {
-    for hardware in [SoftEnclave::new(Access::Nothing, false, None), SoftEnclave::new(Access::CurrentBiometry, true, None)] {
+    for hardware in [SoftEnclave::new(Access::Nothing, Unattended::WantsTheOwner, None), SoftEnclave::new(Access::CurrentBiometry, Unattended::Opened, None), SoftEnclave::new(Access::CurrentBiometry, Unattended::Failed(-3), None)] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("owner.identity");
         assert!(keys::enrol(&path, hardware).is_err());

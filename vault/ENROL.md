@@ -2,24 +2,54 @@
 
 Three things get enrolled: the owner's key on the Mac, a recovery key offline,
 and each secret. Commands below are the procedure, to be run by the owner on
-their own machines. Nothing here has been run for real yet: the end-to-end suite
-covers this flow with a software age identity standing in for the Secure Enclave.
+their own machines. The end-to-end suite covers this flow with a software age identity
+standing in for the Secure Enclave; step 1 says how to run it once with the real one.
 
-Every step uses this crate's binaries. There is no `age` CLI to install.
+Every step uses this crate's binaries. There is no `age` CLI to install, and nothing
+comes from Homebrew. On the Mac the build needs Apple's Command Line Tools and Rust:
+`xcode-select --install` gives `swiftc`, which compiles the enclave shim.
 
-**Do not enrol a real secret yet.** Step 1 is pending, and the steps after it name
-its recipient.
+**Do not enrol a real secret until the round trip in step 1 has passed on this Mac.**
 
 ## 1. The owner's key, on the Mac
 
-**Pending the Secure Enclave spike.** The vault no longer runs `age` or any
-plugin, so an enclave key needs a `KeyFormat` in `src/keys.rs`, and that is not
-written. Until it is, `vault-encrypt` refuses an `age1se1…` line and `vault-approve`
-refuses an `AGE-PLUGIN-SE-1…` identity, each naming the line, and nothing is
-encrypted or decrypted. This step will be written from the spike's result.
+A key that cannot leave the Secure Enclave, whose every decrypt fires Touch ID. It
+needs a Mac with Touch ID and a fingerprint enrolled. No signing identity is needed.
 
-The intent stands: a key that cannot leave the Secure Enclave, whose decrypt fires
-Touch ID, created with `current-biometry` access control.
+```sh
+cargo build --release --no-default-features -p hyperforge-vault
+vault-approve enrol --out ~/.config/vault/owner.identity
+```
+
+It prints the recipient, `age1tag1…`, for step 3. The file holds `AGE-VAULT-ENCLAVE-1…`,
+a wrapped key that only this Mac's enclave can use: it is created owner-only and
+never over an existing file. Touch ID does not fire here. It fires at each decrypt.
+
+To ask whether a file still passes, also without firing Touch ID:
+
+```sh
+vault-approve enrol-check --identity ~/.config/vault/owner.identity
+```
+
+A key passes only if its access control is `current-biometry` and nothing else, and
+the enclave itself will not use it unattended but does know it as its own. A key
+without the gate, a damaged one, or another Mac's is refused, and refused again at
+every decrypt. No command makes a key without the gate.
+
+**Adding or removing a fingerprint ends this key, for good.** That is what
+`current-biometry` means: someone who adds their finger to your Mac gets nothing. So do
+a wipe, or a new Mac. Then only the recovery key opens your secrets: recover each one,
+`vault-approve enrol` again, and re-encrypt under the new recipient. See "Rotating a
+secret" in the README. This is why step 2 is not optional.
+
+**Try it once, with nothing real.** This enrols a throwaway key in a temporary
+directory, runs a throwaway server with a fake WorkOS over loopback, encrypts with
+`vault-encrypt` and decrypts with `vault-approve`, and fires Touch ID once. It needs no
+deployed vault and no `vault-login`, and leaves nothing behind:
+
+```sh
+PLEXUS_NO_REGISTRY=1 cargo test -p hyperforge-vault --test e2e -- --ignored --exact a_real_enclave_round_trip --nocapture
+```
 
 ## 2. The recovery key, offline
 
@@ -40,8 +70,8 @@ One recipient per line, as many as you want. A line `vault-encrypt` cannot read
 refuses the whole file. `~/.config/vault/recipients.txt`:
 
 ```
-# owner, Secure Enclave: pending, see step 1
-age1se1...
+# owner, Secure Enclave, from step 1
+age1tag1...
 # recovery, offline
 age1...
 ```
@@ -147,7 +177,7 @@ With a throwaway secret, never a real one. On any caller:
 vault-run enrol-check --purpose "enrolment check" --env CHECK -- sh -c 'test -n "$CHECK" && echo ok'
 ```
 
-The approver shows the request, Touch ID fires on `y` (once step 1 exists), and the command prints
+The approver shows the request, Touch ID fires on `y`, and the command prints
 `ok`. Answering `n` makes `vault-run` exit with `the owner denied the request`.
 
 ## Recovery

@@ -52,6 +52,8 @@ cargo build -p hyperforge-vault --no-default-features  # the client half: no ser
 The Mac only needs the client half, and so does anything that depends on this
 crate to fetch a secret: `default-features = false` gives the `client`, `keys`,
 `manifest` and `wire` modules with no plexus-core, plexus-macros or plexus-transport.
+On a Mac, either build runs `/usr/bin/swiftc` for the enclave shim, from Apple's Command
+Line Tools. No other build runs it.
 
 ## Testing
 
@@ -91,13 +93,28 @@ the plaintext to its caller, and only `vault-approve` prints it.
 
 `src/keys.rs` is the one place that reads a key. `KeyFormat` turns a line of a
 recipients or identity file into the crate's `age::Recipient` or `age::Identity`,
-and `FORMATS` lists what this build reads, which today is X25519. `encrypt` and
-`reseal` see only the traits, so a new key type is one more `KeyFormat`.
+and `FORMATS` lists what this build reads: X25519, and the Secure Enclave. `encrypt`
+and `reseal` see only the traits, so a new key type is one more `KeyFormat`.
 
 The crate's `plugin` feature stays off: it would run `age-plugin-*` as a child
 process with the file key. So plugin and SSH recipients are refused, not skipped: a
-recipients file with a line no format reads encrypts nothing. **The Secure Enclave
-format is pending its spike**: see [ENROL.md](ENROL.md).
+recipients file with a line no format reads encrypts nothing.
+
+The Secure Enclave format is age's own `p256tag`, so `age1tag1…` is a standard recipient
+that encrypts anywhere, with `age::tag::Recipient`. Decrypting is three layers. `src/p256tag.rs`
+is pure and portable: the stanza and RFC 9180's key schedule, over a `KeyAgreement`
+callback. `src/enclave.rs` holds the gate. `shim/seshim.swift` is the enclave, compiled
+by `build.rs` with `swiftc` on a Mac and skipped everywhere else, where the identity is
+refused by name and the recipient still works. iOS has no shim yet.
+
+`GatedKey::open` is the only way to a key, and refuses one unless its access control
+reads as exactly `current-biometry` and the enclave, asked with the interface forbidden,
+refuses it for want of the owner. Neither can prompt. The access control is an
+undocumented format, read as seen on macOS 14: a change to it refuses the key rather
+than passing it, and the offline recovery key is what remains until this code catches
+up. The shim stores nothing, uses no keychain, and cannot be asked for an ungated key.
+A Touch ID prompt left past the deadline is dismissed, not answered late.
+See [ENROL.md](ENROL.md).
 
 ## The manifest
 
@@ -208,14 +225,18 @@ Limits that will stay:
 
 `vault-approve`, including `recover`, and `vault-encrypt` run on a heap that wipes
 every block as it is freed, including the `Vec`s inside the `age` crate that no
-`Zeroizing` reaches, and that locks every heap block out of swap. Core dumps are
-off: `RLIMIT_CORE` is 0, and on Linux the process is also undumpable, since the
+`Zeroizing` reaches, and that locks every heap block out of swap. `vault-login`, which
+holds the refresh token, has the same heap without the locking. Core dumps are
+off in all three: `RLIMIT_CORE` is 0, and on Linux the process is also undumpable, since the
 limit does not bind a core piped to a handler such as systemd-coredump. That also
 closes `/proc/<pid>/mem` and ptrace to this user's other processes.
 
 If memory cannot be locked, `vault-approve` and `vault-encrypt` stop: before any
-value at startup, and with no seal sent if a block fails to lock later. There is no
-switch to go on regardless, so the remedy is a higher `ulimit -l`.
+value at startup, and with no seal sent if a block fails to lock later. A block that
+fails later costs that one request, which is denied: the next is judged on its own
+blocks, with no restart. There is no switch to go on regardless, so the remedy is a
+higher `ulimit -l`. On a Mac the default is `unlimited`, and both tools run there; below
+about 512 KiB they stop.
 `--require-memory-lock` is still accepted on both and changes nothing. `vault-approve
 recover` is the exception: it says so on stderr and goes on, because a recovery on a
 bad day must still work, and there `--require-memory-lock` makes it stop.

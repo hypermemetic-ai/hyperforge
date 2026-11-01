@@ -2,7 +2,7 @@
 //! in the clear: nothing about it may reach a binary, and nothing can, as it lives
 //! here. The blob has the shape of a real one, so the real gate reads it.
 
-use hyperforge_vault::enclave::Hardware;
+use hyperforge_vault::enclave::{Hardware, Unattended};
 use p256::ecdh::diffie_hellman;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{PublicKey, SecretKey};
@@ -18,7 +18,7 @@ pub enum Access {
 pub struct SoftEnclave {
     pub access: Access,
     /// What the enclave would actually do with the interface forbidden.
-    pub unattended: bool,
+    pub unattended: Unattended,
     /// Touch ID, cancelled with this code.
     pub refuse: Option<i32>,
     pub prompts: AtomicUsize,
@@ -48,12 +48,12 @@ fn set(parts: &[Vec<u8>]) -> Vec<u8> {
 
 impl SoftEnclave {
     /// Leaked: `FORMATS` holds its hardware for the life of the process.
-    pub fn new(access: Access, unattended: bool, refuse: Option<i32>) -> &'static SoftEnclave {
+    pub fn new(access: Access, unattended: Unattended, refuse: Option<i32>) -> &'static SoftEnclave {
         Box::leak(Box::new(SoftEnclave { access, unattended, refuse, prompts: AtomicUsize::new(0) }))
     }
 
     pub fn gated() -> &'static SoftEnclave {
-        Self::new(Access::CurrentBiometry, false, None)
+        Self::new(Access::CurrentBiometry, Unattended::WantsTheOwner, None)
     }
 
     pub fn prompts(&self) -> usize {
@@ -86,8 +86,8 @@ impl Hardware for SoftEnclave {
         Ok(Self::secret(blob).public_key().to_encoded_point(false).as_bytes().try_into().unwrap())
     }
 
-    fn opens_unattended(&self, _: &[u8]) -> anyhow::Result<bool> {
-        Ok(self.unattended)
+    fn unattended(&self, _: &[u8]) -> Unattended {
+        self.unattended
     }
 
     fn ecdh(&self, blob: &[u8], peer: &[u8; 65]) -> Result<Zeroizing<[u8; 32]>, i32> {
