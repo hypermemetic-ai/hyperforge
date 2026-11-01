@@ -239,11 +239,26 @@ fn chain_repos(config_dir: &std::path::Path, name: &str) -> Result<Vec<(String, 
         .collect())
 }
 
-fn resolve_cargo_token(config_dir: &std::path::Path) -> Option<String> {
+fn resolve_store_secret(config_dir: &std::path::Path, reference: &str) -> Option<String> {
     use crate::v5::secrets::SecretResolver as _;
     let resolver = crate::v5::secrets::YamlSecretStore::new(config_dir);
-    let parsed = crate::v5::secrets::SecretRef::parse("secrets://cargo/token").ok()?;
+    let parsed = crate::v5::secrets::SecretRef::parse(reference).ok()?;
     resolver.resolve(&parsed).ok()
+}
+
+/// HYPERFORGE-26: is this one-repo publish a Hackage one? With `--channel
+/// hackage`, or no channel on a repo with a `.cabal` file and no Cargo.toml.
+/// Returns the package's name.
+fn one_repo_cabal_package(dir: &std::path::Path, channel: Option<&str>) -> Result<Option<String>, String> {
+    let asked = channel == Some("hackage");
+    if !asked && (channel.is_some() || dir.join("Cargo.toml").is_file()) {
+        return Ok(None);
+    }
+    match crate::build_system::cabal::cabal_package_name(dir) {
+        Some(name) => Ok(Some(name)),
+        None if asked => Err(format!("no .cabal package in {}", dir.display())),
+        None => Ok(None),
+    }
 }
 
 fn err<S: Into<String>>(code: S, msg: impl Into<String>) -> BuildEvent {
@@ -576,11 +591,11 @@ impl BuildService {
     #[plexus_macros::method(params(
         org = "Org name (one repo, as before; leave out to publish a crate chain)",
         name = "Repo name, or without org the workspace name",
-        channel = "crates.io | npm | pypi (one repo only)",
-        include = "Crates to publish (globs on crate names); with closure, every chain crate they need comes first",
-        exclude = "Crates to leave out (globs)",
-        closure = "Publish what the included crates need too, in dependency order (default true)",
-        execute = "Publish for real; without it every group's dry run runs and nothing is published (default false)"
+        channel = "crates.io | npm | pypi | hackage (one repo only; a repo with a .cabal file and no Cargo.toml defaults to hackage)",
+        include = "Packages to publish (globs on crate and Cabal package names; a Cabal package's repo name serves too); with closure, every chain package they need comes first",
+        exclude = "Packages to leave out (globs)",
+        closure = "Publish what the included packages need too, in dependency order (default true)",
+        execute = "Publish for real; without it every group's dry run runs and nothing is published (default false). Applies to a chain and to one Cabal repo; the other one-repo channels publish at once, as before"
     ))]
     #[allow(clippy::too_many_arguments)]
     pub async fn publish(
@@ -595,25 +610,53 @@ impl BuildService {
     ) -> futures::stream::BoxStream<'static, BuildEvent> {
         use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
+        let chain_args = |repos, include, exclude, closure: bool, execute: bool| {
+            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            crate::v5::build::chain_ops::PublishArgs {
+                repos,
+                include,
+                exclude,
+                closure,
+                execute,
+                token: if execute { resolve_store_secret(&config_dir, "secrets://cargo/token") } else { None },
+                hackage_secret: if execute { resolve_store_secret(&config_dir, "secrets://hackage/token") } else { None },
+                log_dir: self.state_dir.join("publish").join(stamp),
+            }
+        };
         let Some(org) = org else {
             // HYPERFORGE-23: a crate chain over the workspace `name`.
             let repos = match chain_repos(&config_dir, &name) {
                 Ok(r) => r,
                 Err(e) => return futures::stream::once(async move { err("not_found", e) }).boxed(),
             };
-            let execute = execute.unwrap_or(false);
-            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-            let args = crate::v5::build::chain_ops::PublishArgs {
+            let args = chain_args(
                 repos,
-                include: include.unwrap_or_default(),
-                exclude: exclude.unwrap_or_default(),
-                closure: closure.unwrap_or(true),
-                execute,
-                token: if execute { resolve_cargo_token(&config_dir) } else { None },
-                log_dir: self.state_dir.join("publish").join(stamp),
-            };
+                include.unwrap_or_default(),
+                exclude.unwrap_or_default(),
+                closure.unwrap_or(true),
+                execute.unwrap_or(false),
+            );
             return from_task(move |tx| crate::v5::build::chain_ops::publish(tx, args)).boxed();
         };
+        // HYPERFORGE-26: one Cabal repo takes the chain's road to Hackage,
+        // dry run and all, with that one package.
+        if let Ok(dir) = resolve_single_repo_dir(&config_dir, &org, &name) {
+            match one_repo_cabal_package(&dir, channel.as_deref()) {
+                Ok(Some(package)) => {
+                    let args = chain_args(
+                        vec![(format!("{org}/{name}"), dir)],
+                        vec![package],
+                        Vec::new(),
+                        false,
+                        execute.unwrap_or(false),
+                    );
+                    return from_task(move |tx| crate::v5::build::chain_ops::publish(tx, args)).boxed();
+                }
+                Ok(None) => {}
+                Err(e) => return futures::stream::once(async move { err("manifest_not_found", e) }).boxed(),
+            }
+        }
+        let config_dir = config_dir.clone();
         stream! {
             let dir = match resolve_single_repo_dir(&config_dir, &org, &name) {
                 Ok(d) => d, Err(e) => { yield err("not_found", e); return; }

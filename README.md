@@ -212,10 +212,47 @@ dry_run = "scripts/publish.sh dry-run"
 execute = "scripts/publish.sh publish"
 ```
 
-`HYPERFORGE_CRATES_INDEX` / `HYPERFORGE_CRATES_DL` point the registry reads
-elsewhere (a `file://` directory serves as a registry on disk; the tests use
-one). The one-repo forms — `bump --org --name`, `publish --org --name
---channel`, `package_diff --from_ref --to_ref` — are unchanged.
+### Cabal packages and Hackage
+
+A repo's root `.cabal` package is in the chain beside the crates
+(HYPERFORGE-26): `package_diff` and `publish` take it to Hackage by the rules
+above, ordered by `build-depends`, each package a group of its own. A glob
+like `plexus-*` catches both kinds, so read the plan before `--execute`.
+
+```bash
+$W publish --name hypermemetic --include synapse                 # dry run: plexus-protocol, then plexus-synapse
+$W publish --name hypermemetic --include synapse --execute true  # for real
+synapse -P 44104 lforge-v5 hyperforge build publish --org hypermemetic --name plexus-protocol   # one repo: its dry run
+```
+
+- `--include` / `--exclude` match the package name or, for a Cabal package,
+  its repo's name: `synapse` and `plexus-synapse` both select `plexus-synapse`.
+  The closure follows `build-depends`.
+- The dry run is `cabal check` (warnings are reported, not failures; an error
+  fails) and `cabal sdist` into the run's log dir. `--execute true` uploads
+  that tarball with `cabal upload --publish`, skips a version Hackage holds
+  (deprecated ones too), refuses uncommitted changes, stops at the first
+  failure and tags `<package>-v<version>`, as for cargo.
+- One repo: `--channel hackage`, or no channel on a repo with a `.cabal` file
+  and no Cargo.toml. This form honours `--execute`, unlike the other one-repo
+  channels, which publish at once.
+- The token is `HACKAGE_TOKEN`, else `secrets://hackage/token`, else the
+  `password-command` in `~/.cabal/config`, else cabal's own credentials. It
+  reaches cabal in a 0600 `CABAL_CONFIG` file removed after the upload, never
+  on a command line; `cabal upload` has no environment variable for one.
+- `package_diff` says the same statuses, reading PVP versions; `yanked` is a
+  version Hackage marks deprecated, `drifted` compares the published sdist.
+- Not done: `bump` leaves `.cabal` files alone (asked for by name it refuses;
+  caught by a glob it says so and moves the crates), packages nested under a
+  repo's `cabal.project` are not discovered, and a repo's `[publish]` step
+  applies to its crates only.
+
+`HYPERFORGE_CRATES_INDEX` / `HYPERFORGE_CRATES_DL` / `HYPERFORGE_HACKAGE_URL`
+point the registry reads elsewhere (a `file://` directory serves as a registry
+on disk; the tests use one). `HYPERFORGE_HACKAGE_URL` moves reads only, not an
+upload. The one-repo forms — `bump --org --name`, `publish --org --name
+--channel` for crates.io, npm and pypi, `package_diff --from_ref --to_ref` —
+are unchanged.
 
 ## The deploy-driver contract (`driver/`)
 

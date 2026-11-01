@@ -102,10 +102,10 @@ dirs = "5"
 urlencoding = "2"
 tar = "0.4"
 flate2 = "1"
+tempfile = "3"
 git2 = { version = "0.20.4", features = ["vendored-libgit2", "vendored-openssl"] }
 
 [dev-dependencies]
-tempfile = "3"
 
 # --- v5 integration test tiers ---
 # Tier 1 (offline) runs by default. Tier 2 (live forge) and Tier 3

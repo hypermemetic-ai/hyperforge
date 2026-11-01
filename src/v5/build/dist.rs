@@ -33,7 +33,7 @@ const DEFAULT_DIST_TOML: &str = r#"# Hyperforge dist.toml — distribution metad
 
 [dist]
 # Channels this package publishes to. Supported: crates.io, npm, pypi,
-# homebrew, cargo-binstall.
+# hackage, homebrew, cargo-binstall.
 channels = []
 
 [binary]

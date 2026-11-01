@@ -10,7 +10,7 @@ pub fn is_cabal_project(path: &Path) -> bool {
 }
 
 /// Find the .cabal file in a directory
-fn find_cabal_file(path: &Path) -> Option<std::path::PathBuf> {
+pub fn find_cabal_file(path: &Path) -> Option<std::path::PathBuf> {
     let entries = std::fs::read_dir(path).ok()?;
     for entry in entries.flatten() {
         let p = entry.path();
