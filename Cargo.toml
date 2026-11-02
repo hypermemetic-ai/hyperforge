@@ -70,7 +70,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 clap = { version = "4", features = ["derive"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "multipart", "native-tls-vendored"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "native-tls-vendored", "stream"] }
+sha2 = "0.10"
+tokio-util = { version = "0.7", features = ["io"] }
 
 
 

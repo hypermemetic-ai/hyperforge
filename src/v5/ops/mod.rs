@@ -10,6 +10,7 @@
 
 pub mod state;
 pub mod pr;
+pub mod release_assets;
 pub mod repo;
 pub mod fs;
 pub mod git;

@@ -28,6 +28,29 @@ pub enum BuildEvent {
         finding: manifest::Finding,
     },
     ValidateOk { name: String, total: u32 },
+    /// `release_asset`: one file, as planned or as uploaded (`dry_run` false).
+    ReleaseAsset {
+        repo: String,
+        forge: String,
+        tag: String,
+        name: String,
+        size: u64,
+        sha256: String,
+        /// `upload` or `replace`.
+        action: String,
+        uploaded: bool,
+        dry_run: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    /// `release_asset`: the run, with a release to create when `create_release`.
+    ReleaseAssetsDone {
+        repo: String,
+        tag: String,
+        dry_run: bool,
+        create_release: bool,
+        uploaded: Vec<String>,
+    },
     /// `link`: this checkout's cargo now uses these crates' sibling checkouts.
     Linked { path: String, crates: Vec<String> },
     /// `unlink`: the checkout is back on published crates.
@@ -544,6 +567,69 @@ impl BuildService {
             Err(e) => return futures::stream::once(async move { err("not_found", e) }).boxed(),
         };
         from_task(move |tx| crate::v5::build::chain_ops::link(tx, repos, PathBuf::from(path), include, exclude.unwrap_or_default())).boxed()
+    }
+
+    #[plexus_macros::method(params(
+        path = "Repo checkout directory; its origin names the forge (GitHub or Codeberg)",
+        tag = "Tag of the release, already on the forge",
+        files = "Files to attach, named on the release by their file names",
+        replace = "Delete and re-upload an asset of the same name (default false: refused)",
+        create_release = "Create the release if the tag has none (default false: refused)",
+        execute = "Upload (default false: check and list only)"
+    ))]
+    pub async fn release_asset(
+        &self,
+        path: String,
+        tag: String,
+        files: Vec<String>,
+        replace: Option<bool>,
+        create_release: Option<bool>,
+        execute: Option<bool>,
+    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        use crate::v5::ops::release_assets as ops;
+        let config_dir = self.config_dir.clone();
+        from_task(move |tx| async move {
+            let create = create_release.unwrap_or(false);
+            let execute = execute.unwrap_or(false);
+            let args = ops::Args {
+                dir: PathBuf::from(path),
+                tag,
+                files: files.into_iter().map(PathBuf::from).collect(),
+                replace: replace.unwrap_or(false),
+                create_release: create,
+                endpoint: std::env::var("HF_RELEASE_API_URL").ok(),
+            };
+            let mut plan = match ops::plan(&config_dir, args).await {
+                Ok(p) => p,
+                Err((code, message)) => { let _ = tx.send(err(code, message)); return; }
+            };
+            let (repo, tag, forge) = (plan.repo.clone(), plan.tag.clone(), plan.forge.as_str().to_string());
+            let event = |a: &ops::Asset, uploaded: bool, url: Option<String>| BuildEvent::ReleaseAsset {
+                repo: repo.clone(), forge: forge.clone(), tag: tag.clone(),
+                name: a.name.clone(), size: a.size, sha256: a.sha256.clone(),
+                action: if a.existing.is_some() { "replace" } else { "upload" }.into(),
+                uploaded, dry_run: !execute, url,
+            };
+            let to_create = plan.release.is_none();
+            let uploaded = if execute {
+                let sent = match plan.ensure_release().await {
+                    Ok(release) => plan.upload_all(release, |a, up| { let _ = tx.send(event(a, true, up.url)); }).await,
+                    Err(e) => Err(e),
+                };
+                match sent {
+                    Ok(names) => names,
+                    Err((code, message)) => { let _ = tx.send(err(code, message)); return; }
+                }
+            } else {
+                for a in &plan.assets {
+                    let _ = tx.send(event(a, false, None));
+                }
+                Vec::new()
+            };
+            let _ = tx.send(BuildEvent::ReleaseAssetsDone {
+                repo: repo.clone(), tag: tag.clone(), dry_run: !execute, create_release: to_create, uploaded,
+            });
+        })
     }
 
     #[plexus_macros::method(params(path = "Checkout to return to published crates"))]
