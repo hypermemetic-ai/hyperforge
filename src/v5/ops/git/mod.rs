@@ -188,6 +188,27 @@ pub fn push_ref(dir: &Path, remote: &str, refspec: &str) -> Result<(), GitError>
     subprocess::push_ref(dir, remote, refspec)
 }
 
+/// HYPERFORGE-60: an unrun `git -C <dir>` command with extra `-c` settings
+/// and environment (credentials go in the environment, never the args).
+pub fn command_with(
+    dir: &Path,
+    config: &[&str],
+    envs: &[(String, std::ffi::OsString)],
+    args: &[&str],
+) -> std::process::Command {
+    subprocess::command_with(dir, config, envs, args)
+}
+
+/// HYPERFORGE-60: does `refname` resolve in `dir`?
+pub fn ref_exists(dir: &Path, refname: &str) -> bool {
+    subprocess::ref_exists(dir, refname)
+}
+
+/// HYPERFORGE-60: `(refname, sha)` for every ref under `pattern`.
+pub fn refs_under(dir: &Path, pattern: &str) -> Vec<(String, String)> {
+    subprocess::refs_under(dir, pattern)
+}
+
 // ===================================================================
 // Routed ops — git2 by default, subprocess via HF_GIT_FORCE_SUBPROCESS.
 // ===================================================================

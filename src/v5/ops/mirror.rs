@@ -126,14 +126,7 @@ pub fn refspecs(dir: &Path, branches: &[String], all_branches: bool, tags: bool)
             if b.is_empty() || b.starts_with('+') || b.contains(':') {
                 return Err(format!("'{b}' is not a branch name"));
             }
-            let ok = Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")])
-                .output()
-                .map_err(|e| e.to_string())?
-                .status
-                .success();
+            let ok = crate::v5::ops::git::ref_exists(dir, &format!("refs/heads/{b}"));
             if !ok {
                 return Err(format!("no local branch '{b}' in {}", dir.display()));
             }
@@ -185,18 +178,16 @@ fn askpass() -> Result<Askpass, String> {
 /// The `git` command for one push or listing. Pure, so tests can check that
 /// the token is in the environment only.
 fn git_command(dir: &Path, provider: ProviderKind, url: &str, cred: Option<&Credential>, askpass: Option<&Path>, tail: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    let mut envs: Vec<(String, std::ffi::OsString)> = vec![("GIT_TERMINAL_PROMPT".into(), "0".into())];
+    let mut config: Vec<&str> = Vec::new();
     if let (Some(c), Some(a), true) = (cred, askpass, is_http(url)) {
         // Only this token: no stored helper answers instead.
-        cmd.args(["-c", "credential.helper="]);
-        cmd.env("GIT_ASKPASS", a);
-        cmd.env("HF_MIRROR_USER", http_user(provider, url));
-        cmd.env("HF_MIRROR_TOKEN", &c.token);
+        config.push("credential.helper=");
+        envs.push(("GIT_ASKPASS".into(), a.as_os_str().to_owned()));
+        envs.push(("HF_MIRROR_USER".into(), http_user(provider, url).into()));
+        envs.push(("HF_MIRROR_TOKEN".into(), c.token.clone().into()));
     }
-    cmd.args(tail);
-    cmd
+    crate::v5::ops::git::command_with(dir, &config, &envs, tail)
 }
 
 /// What one push did, ref by ref (`git push --porcelain`).
@@ -258,20 +249,7 @@ pub struct Compared {
 }
 
 fn local_refs(dir: &Path, pattern: &str) -> BTreeMap<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["for-each-ref", "--format=%(objectname) %(refname)", pattern])
-        .output();
-    let mut m = BTreeMap::new();
-    if let Ok(o) = out {
-        for l in String::from_utf8_lossy(&o.stdout).lines() {
-            if let Some((sha, name)) = l.split_once(' ') {
-                m.insert(name.to_string(), sha.to_string());
-            }
-        }
-    }
-    m
+    crate::v5::ops::git::refs_under(dir, pattern).into_iter().collect()
 }
 
 /// Compare the checkout's branches (named, or all) and tags with what the

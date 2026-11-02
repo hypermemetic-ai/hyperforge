@@ -70,6 +70,43 @@ pub(super) fn push_refs(dir: &Path, remote: &str, branch: Option<&str>) -> Resul
     run_git(None, &args)
 }
 
+/// HYPERFORGE-60: a `git -C <dir>` command with extra `-c` settings and
+/// environment, unrun, for a caller that passes a credential through the
+/// environment (never the arguments) and reads git's output itself.
+pub(super) fn command_with(
+    dir: &Path,
+    config: &[&str],
+    envs: &[(String, std::ffi::OsString)],
+    args: &[&str],
+) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    for c in config {
+        cmd.arg("-c").arg(c);
+    }
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.args(args);
+    cmd
+}
+
+/// HYPERFORGE-60: does `refname` resolve in `dir`?
+pub(super) fn ref_exists(dir: &Path, refname: &str) -> bool {
+    run_git_capture(None, &["-C", dir.to_str().unwrap_or(""), "rev-parse", "--verify", "--quiet", refname]).is_ok()
+}
+
+/// HYPERFORGE-60: `(refname, sha)` for every ref under `pattern`.
+pub(super) fn refs_under(dir: &Path, pattern: &str) -> Vec<(String, String)> {
+    run_git_capture(None, &["-C", dir.to_str().unwrap_or(""), "for-each-ref", "--format=%(objectname) %(refname)", pattern])
+        .map(|out| {
+            out.lines()
+                .filter_map(|l| l.split_once(' ').map(|(sha, name)| (name.to_string(), sha.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(super) fn push_ref(dir: &Path, remote: &str, refspec: &str) -> Result<(), GitError> {
     ensure_git_repo(dir)?;
     run_git(
