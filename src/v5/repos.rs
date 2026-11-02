@@ -3134,8 +3134,9 @@ impl ReposService {
 
     /// HYPE-6: resolve each registered repo's canonical owner on the forge
     /// and report divergence; with `heal`, repair it through the
-    /// provider-scoped `migrate_one`. Read-only by default; `heal` acts,
-    /// `dry_run` previews. Owner-aliases (HYPE-5) are reported clean.
+    /// provider-scoped `migrate_one`. Read-only by default; `heal` previews
+    /// the repair, and writes only with `--dry-run false`. Owner-aliases
+    /// (HYPE-5) and owner case are reported clean.
     #[plexus_macros::method(params(
         org = "Org whose repos to check against the forge",
         name = "Optional single repo to limit scope",
