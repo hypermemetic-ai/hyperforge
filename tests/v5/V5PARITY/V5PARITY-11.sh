@@ -92,15 +92,19 @@ echo "$out" | hf_assert_event '.type == "dist_init" and .ref.name == "beta"'
 out=$(hf_cmd build dist_show --name main)
 echo "$out" | hf_assert_event '.type == "dist_show" and .ref.name == "alpha" and (.content // "" | contains("[dist]"))'
 
-# --- run: echo $PWD inside each member ---
-out=$(hf_cmd build run --name main --cmd 'pwd')
+# --- foreach: echo $PWD inside each member ---
+out=$(hf_cmd build foreach --name main --cmd 'pwd')
 echo "$out" | hf_assert_event ".type == \"exec_output\" and .exit_code == 0 and .ref.name == \"alpha\" and (.stdout | contains(\"$ALPHA\"))"
 echo "$out" | hf_assert_event ".type == \"exec_output\" and .ref.name == \"beta\" and (.stdout | contains(\"$BETA\"))"
 echo "$out" | hf_assert_event '.type == "exec_summary" and .total == 2 and .ok == 2'
 
-# --- run tolerates per-member failure ---
-out=$(hf_cmd build run --name main --cmd 'test -f expected-file')
+# --- foreach tolerates per-member failure ---
+out=$(hf_cmd build foreach --name main --cmd 'test -f expected-file')
 echo "$out" | hf_assert_event '.type == "exec_summary" and .total == 2 and .errored == 2'
+
+# --- the old name refuses, naming the new one ---
+out=$(hf_cmd build run --name main --cmd pwd || true)
+echo "$out" | hf_assert_event '.type == "error" and .code == "renamed" and (.message | contains("foreach"))'
 
 # --- exec: single repo ---
 out=$(hf_cmd build exec --org demo --name alpha --cmd 'echo hi')

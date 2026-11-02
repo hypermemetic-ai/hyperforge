@@ -145,19 +145,6 @@ else
     record "U5 yellow: tier-2 auth_check scripted elsewhere (V5PARITY-7)"
 fi
 
-# --- Ticket-state audit: every V5PARITY-2..12 is Complete ---
-status_issues=0
-for n in 2 3 4 5 6 7 8 9 10 11 12; do
-    tf="plans/v5/V5PARITY/V5PARITY-$n.md"
-    if ! grep -qE '^status: Complete$' "$tf"; then
-        record "V5PARITY-$n red: status not Complete"
-        status_issues=$((status_issues+1))
-    fi
-done
-if (( status_issues == 0 )); then
-    record "tickets: all V5PARITY-2..12 marked Complete"
-fi
-
 echo
 echo "=== V5PARITY checkpoint map ==="
 printf '%s\n' "${results[@]}"

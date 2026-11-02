@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tier: 1
-# V5PARITY-9 acceptance: build.{unify, analyze, validate,
+# V5PARITY-9 acceptance: build.{unify, analyze, check_manifests,
 #   detect_name_mismatches, package_diff}.
 set -euo pipefail
 source "$(dirname "$0")/../harness/lib.sh"
@@ -86,13 +86,17 @@ echo "$out" | hf_assert_event '.type == "package_manifest" and .name == "beta-pk
 out=$(hf_cmd build analyze --name main)
 echo "$out" | hf_assert_event '.type == "analyze_finding" and .kind == "version_mismatch" and .dep == "serde"'
 
-# --- build.validate passes ---
-out=$(hf_cmd build validate --name main)
+# --- build.check_manifests passes ---
+out=$(hf_cmd build check_manifests --name main)
 echo "$out" | hf_assert_event '.type == "validate_ok" and .total == 2'
 
-# --- break beta's Cargo.toml, validate now fails ---
+# --- the old name refuses, naming the new one ---
+out=$(hf_cmd build validate --name main || true)
+echo "$out" | hf_assert_event '.type == "error" and .code == "renamed" and (.message | contains("check_manifests"))'
+
+# --- break beta's Cargo.toml, check_manifests now fails ---
 printf 'this = [is not (valid toml\n' > "$BETA/Cargo.toml"
-out=$(hf_cmd build validate --name main)
+out=$(hf_cmd build check_manifests --name main)
 echo "$out" | hf_assert_event '.type == "validate_failed" and .failed == 1'
 echo "$out" | hf_assert_event '.type == "error" and .code == "manifest_parse_error"'
 

@@ -576,8 +576,7 @@ impl HyperforgeService {
                 crate::v5::config::ProviderKind::Codeberg => "codeberg",
                 crate::v5::config::ProviderKind::Gitlab => "gitlab",
             };
-            // Apply optional --forge filter (we only have one forge per org for now,
-            // but the parameter is here for v4-shape compatibility).
+            // Optional --forge filter (one forge per org for now).
             if let Some(f) = forge.as_deref() {
                 if f != provider_str {
                     yield HyperforgeV5Event::SshKeyShow {
@@ -721,10 +720,9 @@ impl HyperforgeService {
     }
 }
 
-/// V5PARITY-26: a config dir is "empty" when neither `orgs/` nor
-/// `workspaces/` contains any *.yaml files. We don't check `secrets.yaml`
-/// because the secret store is permissioned-but-content-shared with v4
-/// in the historical layout — finding it doesn't imply v5 setup.
+/// A config dir is "empty" when neither `orgs/` nor `workspaces/`
+/// contains any *.yaml files. `secrets.yaml` alone does not count:
+/// a store can exist before any org is set up.
 fn config_is_empty(config_dir: &std::path::Path) -> bool {
     fn dir_has_yaml(p: &std::path::Path) -> bool {
         std::fs::read_dir(p)

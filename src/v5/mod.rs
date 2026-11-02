@@ -1,7 +1,6 @@
 //! Hyperforge v5.
 //!
-//! Design invariants and epic docs live under `plans/v5/`. This module
-//! holds the activation tree, config loaders, and secret store.
+//! This module holds the activation tree, config loaders, and secret store.
 
 pub mod adapters;
 pub mod build;

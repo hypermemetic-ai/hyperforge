@@ -430,8 +430,51 @@ impl BuildService {
         }
     }
 
-    #[plexus_macros::method(params(name = "Workspace name"))]
+    /// Removed name: v4's `build validate` ran Docker validation, and v5
+    /// never did. Refuses, naming `build check_manifests` (manifest parse)
+    /// and `ci` (pipelines).
+    #[plexus_macros::method(params(
+        name = "Ignored: the method is renamed",
+        level = "Ignored: v4 flag"
+    ))]
     pub async fn validate(
+        &self,
+        name: Option<String>,
+        level: Option<String>,
+    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        let _ = (name, level);
+        futures::stream::iter([err(
+            "renamed",
+            "build validate is gone: `build check_manifests --name WS` parses every manifest; pipelines and container checks are `ci`",
+        )])
+    }
+
+    /// Removed name: v4's `build run` ran the `[ci]` runners, v5's ran a
+    /// shell command. Refuses, naming `build foreach` (shell command per
+    /// member) and `ci` (pipelines).
+    #[plexus_macros::method(params(
+        name = "Ignored: the method is renamed",
+        cmd = "Ignored: the method is renamed",
+        level = "Ignored: v4 flag"
+    ))]
+    pub async fn run(
+        &self,
+        name: Option<String>,
+        cmd: Option<String>,
+        level: Option<String>,
+    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        let _ = (name, cmd, level);
+        futures::stream::iter([err(
+            "renamed",
+            "build run is gone: `build foreach --name WS --cmd CMD` runs a shell command in every member; pipelines and `[ci]` runners are `ci`",
+        )])
+    }
+
+    /// Parse every member's package manifest (Cargo.toml, package.json,
+    /// .cabal, pyproject.toml) and report the ones that do not parse.
+    /// Builds nothing and runs no container: a quick manifest check.
+    #[plexus_macros::method(params(name = "Workspace name"))]
+    pub async fn check_manifests(
         &self,
         name: String,
     ) -> impl Stream<Item = BuildEvent> + Send + 'static {
@@ -896,12 +939,17 @@ impl BuildService {
         }.boxed()
     }
 
+    /// Release one repo: bump its version, commit, tag, push the branch and
+    /// the tag, then optionally attach files to the forge release and
+    /// publish to a registry. Planned only unless `execute`. It does not
+    /// build binaries: build them first and pass them as `assets`.
     #[plexus_macros::method(params(
         org = "Org name",
         name = "Repo name",
         bump = "major | minor | patch",
         channel = "Publish after the tag lands: crates.io | npm | pypi | hackage; none publishes nothing",
-        execute = "Do it; without it the release is planned and nothing is written (default false)"
+        execute = "Do it; without it the release is planned and nothing is written (default false)",
+        assets = "Files to attach to the forge release for the new tag (created if missing); checked before anything is written"
     ))]
     pub async fn release(
         &self,
@@ -910,6 +958,7 @@ impl BuildService {
         bump: Option<String>,
         channel: Option<String>,
         execute: Option<bool>,
+        assets: Option<Vec<String>>,
     ) -> impl Stream<Item = BuildEvent> + Send + 'static {
         use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
@@ -926,6 +975,14 @@ impl BuildService {
                 Some("pypi") => Some("pypi/token"),
                 Some(other) => { yield err("unknown_channel", other); return; }
             };
+            let assets: Vec<String> = assets.unwrap_or_default().into_iter().map(|a| {
+                let p = PathBuf::from(&a);
+                if p.is_absolute() { a } else { dir.join(p).display().to_string() }
+            }).collect();
+            if let Some(missing) = assets.iter().find(|a| !std::path::Path::new(a).is_file()) {
+                yield err("asset_missing", format!("no file at {missing}: nothing was written"));
+                return;
+            }
             let plan = match release::plan(&dir, bump.as_deref().unwrap_or("patch")) {
                 Ok(p) => p, Err(r) => { yield err(r.code, r.message); return; }
             };
@@ -965,7 +1022,17 @@ impl BuildService {
                 yield err(e.code(), format!("the bump is pushed, {} is not: {e}", plan.tag));
                 return;
             }
-            yield BuildEvent::ReleaseCreated { reference, tag: plan.tag };
+            yield BuildEvent::ReleaseCreated { reference, tag: plan.tag.clone() };
+            if !assets.is_empty() {
+                let mut uploads = Box::pin(service.release_asset(
+                    dir.display().to_string(), plan.tag.clone(), assets, None, Some(true), Some(true),
+                ).await);
+                while let Some(ev) = uploads.next().await {
+                    let failed = matches!(ev, BuildEvent::Error { .. });
+                    yield ev;
+                    if failed { return; }
+                }
+            }
             // Publish is the publish road's, and only it says published.
             if let Some(ch) = channel {
                 let mut published =
@@ -1168,11 +1235,14 @@ impl BuildService {
         }
     }
 
+    /// Run one shell command in every member's checkout, in turn, and
+    /// report each exit code and output. It does not read `[ci]` runners:
+    /// pipelines are `ci`'s.
     #[plexus_macros::method(params(
         name = "Workspace name",
         cmd = "Shell command to run in each member's checkout"
     ))]
-    pub async fn run(
+    pub async fn foreach(
         &self,
         name: String,
         cmd: String,

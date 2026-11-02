@@ -124,7 +124,7 @@ unreachable_pub = "warn"
 # wrap non-Debug foreign values (`reqwest::Client`, `Arc<dyn AuthProvider>`,
 # `bollard::Docker`, etc.). Deriving cleanly would require adding `Debug` as
 # a supertrait to `AuthProvider` and manual impls for the rest. Scope
-# exceeds HF-CLEAN; tracked by HF-DEBUG (see plans/HF/HF-DEBUG.md, Pending).
+# exceeds HF-CLEAN; left for a later sweep.
 missing_debug_implementations = "allow"
 
 [lints.clippy]
@@ -158,8 +158,7 @@ ignored_unit_patterns = "allow"
 # `cast_possible_truncation`, `cast_precision_loss` — all nursery/pedantic
 # lints that fire on code where the current form is either idiomatic or the
 # cited risk is a non-issue. Each would take a sweep to address and
-# benchmark that is out of scope for HF-CLEAN. Tracked by HF-LINT-SWEEP
-# (see plans/HF/HF-LINT-SWEEP.md, Pending).
+# benchmark that is out of scope for HF-CLEAN. Left for a later sweep.
 significant_drop_tightening = "allow"
 assigning_clones = "allow"
 option_if_let_else = "allow"

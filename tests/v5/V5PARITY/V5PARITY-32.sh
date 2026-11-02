@@ -37,22 +37,11 @@ grep -qE '^# Hyperforge\b' README.md \
     || { echo "FAIL: README missing top-level header" >&2; exit 1; }
 grep -q "v5" README.md \
     || { echo "FAIL: README does not mention v5" >&2; exit 1; }
-grep -q "orgs bootstrap" README.md \
-    || { echo "FAIL: README quick-start does not show V5PARITY-21 flow" >&2; exit 1; }
-echo "README: leads with v5"
+grep -q "orgs bootstrap" docs/workflows/onboarding.md \
+    || { echo "FAIL: onboarding does not show the orgs bootstrap flow" >&2; exit 1; }
+echo "README + onboarding: present"
 
-# --- (6) MIGRATION.md exists and covers the v4→v5 handoff ---
-[[ -f MIGRATION.md ]] || { echo "FAIL: MIGRATION.md missing" >&2; exit 1; }
-grep -q "hyperforge-legacy" MIGRATION.md \
-    || { echo "FAIL: MIGRATION.md doesn't mention legacy binary" >&2; exit 1; }
-echo "MIGRATION.md: present + documents handoff"
-
-# --- (7) CONTRACTS D1 updated ---
-grep -q 'default port is \*\*44104\*\*' plans/v5/CONTRACTS.md \
-    || { echo "FAIL: CONTRACTS D1 still says 44105" >&2; exit 1; }
-echo "CONTRACTS D1: pinned at 44104"
-
-# --- (8) hyperforge binary actually runs (not just builds) ---
+# --- (6) hyperforge binary actually runs (not just builds) ---
 PORT=$(__hf_pick_port)
 TMP=$(mktemp -d)
 nohup target/debug/hyperforge --port "$PORT" --config-dir "$TMP" \

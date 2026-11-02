@@ -1,12 +1,8 @@
-//! hyperforge — canonical v5 daemon binary (V5PARITY-32).
+//! hyperforge: the daemon binary.
 //!
-//! Listens on `--port` (default 44104, pinned in CONTRACTS D1 since
-//! v5 became the canonical hyperforge in 5.0.0), registers a Plexus
-//! `DynamicService` namespaced as `lforge-v5` (D1), and serves
+//! Listens on `--port` (default 44104), registers a Plexus
+//! `DynamicService` namespaced as `lforge-v5`, and serves
 //! `HyperforgeService` over WebSocket JSON-RPC.
-//!
-//! v4 still builds as `hyperforge-legacy` for one release as a
-//! migration courtesy; will be removed in 6.0.0.
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -1,8 +1,6 @@
 # tests/v5/harness/lib.sh
 #
-# Shared bash surface for v5 integration tests. See plans/v5/CONTRACTS.md
-# §harness for the pinned API. V5CORE-9 implements exactly that surface;
-# drift between this file and §harness is resolved in §harness's favor.
+# Shared bash surface for v5 integration tests.
 #
 # All functions are `set -e`-safe. Assertion helpers exit non-zero on
 # failure and print a diagnostic to stderr.

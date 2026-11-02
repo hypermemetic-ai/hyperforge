@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::v5::config::{OrgName, ProviderKind};
 
-/// On-disk shape of `<repo>/.hyperforge/config.toml` — CONTRACTS §types
-/// `HyperforgeRepoConfig`. Narrower than v4's HyperforgeConfig; CI /
-/// dist / large-file-threshold are deliberately v5-out-of-scope.
+/// On-disk shape of `<repo>/.hyperforge/config.toml`. Keys it does not
+/// name (`[ci]`, `[publish]`, ...) are left to their own readers. A file
+/// without `repo_name` takes the checkout directory's name.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HyperforgeRepoConfig {
+    #[serde(default)]
     pub repo_name: String,
     pub org: OrgName,
     #[serde(default)]
@@ -39,7 +40,15 @@ pub fn read_hyperforge_config(dir: &Path) -> Result<Option<HyperforgeRepoConfig>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(InitError::Io(e.to_string())),
     };
-    toml::from_str(&raw).map(Some).map_err(|e| InitError::InvalidToml(e.to_string()))
+    let mut cfg: HyperforgeRepoConfig =
+        toml::from_str(&raw).map_err(|e| InitError::InvalidToml(e.to_string()))?;
+    if cfg.repo_name.is_empty() {
+        cfg.repo_name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| InitError::InvalidToml(format!("{}: no repo_name and no directory name", path.display())))?;
+    }
+    Ok(Some(cfg))
 }
 
 /// Write a `.hyperforge/config.toml` atomically. Fails if a file
@@ -86,5 +95,33 @@ impl InitError {
             Self::InvalidToml(_) => "invalid_toml",
             Self::Io(_) => "io_error",
         }
+    }
+}
+
+#[cfg(test)]
+mod repo_name_default {
+    use super::read_hyperforge_config;
+
+    #[test]
+    fn a_config_without_repo_name_takes_the_directory_name() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("plexus-core");
+        std::fs::create_dir_all(dir.join(".hyperforge")).unwrap();
+        std::fs::write(
+            dir.join(".hyperforge/config.toml"),
+            "org = \"hypermemetic-ai\"\nforges = [\"github\"]\n\n[ci]\nskip_validate = false\n",
+        ).unwrap();
+        let cfg = read_hyperforge_config(&dir).unwrap().unwrap();
+        assert_eq!(cfg.repo_name, "plexus-core");
+        assert_eq!(cfg.org.as_str(), "hypermemetic-ai");
+    }
+
+    #[test]
+    fn a_named_config_keeps_its_name() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("checkout-dir");
+        std::fs::create_dir_all(dir.join(".hyperforge")).unwrap();
+        std::fs::write(dir.join(".hyperforge/config.toml"), "repo_name = \"menger\"\norg = \"hypermemetic-ai\"\n").unwrap();
+        assert_eq!(read_hyperforge_config(&dir).unwrap().unwrap().repo_name, "menger");
     }
 }
