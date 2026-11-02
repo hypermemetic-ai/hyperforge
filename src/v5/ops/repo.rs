@@ -138,6 +138,29 @@ pub fn default_token_ref_for(org: &OrgConfig) -> String {
     format!("secrets://{provider}/_default/token")
 }
 
+/// HYPERFORGE-58: the org's token ref, only when the org's forge is
+/// `provider` (an org has one forge; a remote on another provider gets
+/// none, and the caller falls back to that provider's default).
+#[must_use]
+pub fn token_ref_scoped(org: &OrgConfig, provider: ProviderKind) -> Option<&str> {
+    if org.forge.provider == provider {
+        token_ref_for(org)
+    } else {
+        None
+    }
+}
+
+/// HYPERFORGE-58: `secrets://<provider>/_default/token` for a provider.
+#[must_use]
+pub fn provider_default_token_ref(provider: ProviderKind) -> String {
+    let p = match provider {
+        ProviderKind::Github => "github",
+        ProviderKind::Codeberg => "codeberg",
+        ProviderKind::Gitlab => "gitlab",
+    };
+    format!("secrets://{p}/_default/token")
+}
+
 /// V5PARITY-34: filter remotes by the per-repo `forges` scope.
 ///
 /// When `repo.forges` is `None`, every remote participates (legacy
@@ -332,6 +355,92 @@ pub async fn privatize_on_forge(
         .map(|_| ())
 }
 
+/// Resolve a repo's CANONICAL owner on its forge, following any
+/// rename/transfer redirect (org-diff). Thin wrapper over the adapter's
+/// `canonical_owner` that mirrors `exists_on_forge`'s shape so services never
+/// touch the adapter directly.
+pub async fn canonical_owner_on_forge(
+    remote: &Remote,
+    repo_ref: &RepoRef,
+    provider_map: &BTreeMap<DomainName, ProviderKind>,
+    resolver: &dyn SecretResolver,
+    token_ref: Option<&str>,
+    fallback_token_ref: Option<String>,
+) -> Result<String, ForgePortError> {
+    let provider = derive_provider(remote, provider_map)
+        .map_err(|e| ForgePortError::new(ForgeErrorClass::Network, e))?;
+    let adapter = for_provider(provider);
+    let auth = ForgeAuth { token_ref, fallback_token_ref, resolver };
+    adapter.canonical_owner(remote, repo_ref, &auth).await
+}
+
+// ---------------------------------------------------------------------
+// Org-diff — discover which repos moved between two orgs on the forge.
+// Read-only; the bucketing is pure so it unit-tests against an injected
+// resolver. The `moved` bucket is the exact `members` argument an
+// operator then feeds to `workspaces.migrate_org`.
+// ---------------------------------------------------------------------
+
+/// Bucket a single repo lands in after resolving its canonical owner
+/// against the forge, relative to a `(from_org, to_org)` pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrgDiffVerdict {
+    /// Canonical owner == `to_org`: the repo moved as intended.
+    Moved,
+    /// Canonical owner == `from_org`: the repo did NOT move.
+    Stayed,
+    /// Canonical owner is some third org/user.
+    Elsewhere,
+    /// Repo not found on the forge at all.
+    Missing,
+}
+
+impl OrgDiffVerdict {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Moved => "moved",
+            Self::Stayed => "stayed",
+            Self::Elsewhere => "elsewhere",
+            Self::Missing => "missing",
+        }
+    }
+
+    /// Pure classifier: given the forge's canonical-owner answer for a
+    /// repo (`Ok(owner)` or `Err(class)`), bucket it. A `not_found`
+    /// forge error → `Missing`; any other forge error → `Elsewhere`
+    /// is NOT assumed — errors other than not_found are surfaced by the
+    /// caller as a per-repo error event, so this only handles the
+    /// resolved-owner and not-found cases.
+    #[must_use]
+    pub fn classify(canonical_owner: &str, from_org: &str, to_org: &str) -> Self {
+        if canonical_owner == to_org {
+            Self::Moved
+        } else if canonical_owner == from_org {
+            Self::Stayed
+        } else {
+            Self::Elsewhere
+        }
+    }
+
+    /// Two-sided classifier (DEFECT 56f3fc38). When the `from_org`
+    /// canonical-owner lookup returns `not_found`, we CANNOT conclude the
+    /// repo is gone: a private repo that was transferred to `to_org`
+    /// 301-redirects, but if the source token lacks read access at the
+    /// destination GitHub returns 404 (hides existence). So we probe
+    /// `to_org` directly with `to_org`'s OWN credentials. If it exists
+    /// there, the repo MOVED; only when it is absent at BOTH ends is it
+    /// genuinely MISSING.
+    #[must_use]
+    pub const fn classify_not_found_at_source(exists_at_to_org: bool) -> Self {
+        if exists_at_to_org {
+            Self::Moved
+        } else {
+            Self::Missing
+        }
+    }
+}
+
 // ---------------------------------------------------------------------
 // Sync — single source of truth, called by both services (V5LIFECYCLE-3).
 // ---------------------------------------------------------------------
@@ -497,3 +606,96 @@ pub enum PurgeError {
 // Suppress unused imports we expose for service consumers.
 #[allow(unused_imports)]
 use adapters as _adapters_anchor;
+
+#[cfg(test)]
+mod tests {
+    #[allow(unused_imports)]
+    use super::*;
+
+    #[test]
+    fn test_org_diff_verdict_classify() {
+        use super::OrgDiffVerdict as V;
+        // moved: canonical owner is the target org.
+        assert_eq!(
+            V::classify("hypermemetic-ai", "hypermemetic", "hypermemetic-ai"),
+            V::Moved,
+        );
+        // stayed: canonical owner is still the source org.
+        assert_eq!(
+            V::classify("hypermemetic", "hypermemetic", "hypermemetic-ai"),
+            V::Stayed,
+        );
+        // elsewhere: some third owner.
+        assert_eq!(
+            V::classify("someone-else", "hypermemetic", "hypermemetic-ai"),
+            V::Elsewhere,
+        );
+    }
+
+    #[test]
+    fn test_org_diff_verdict_classify_not_found_at_source() {
+        use super::OrgDiffVerdict as V;
+        // DEFECT 56f3fc38: a private repo transferred to `to_org` whose
+        // canonical-owner lookup 404s at `from_org` (source token lacks
+        // destination access) is recovered as MOVED once the two-sided
+        // probe confirms it exists at `to_org`.
+        assert_eq!(V::classify_not_found_at_source(true), V::Moved);
+        // Absent at both ends => genuinely MISSING.
+        assert_eq!(V::classify_not_found_at_source(false), V::Missing);
+    }
+
+    #[test]
+    fn test_org_diff_verdict_as_str() {
+        use super::OrgDiffVerdict as V;
+        assert_eq!(V::Moved.as_str(), "moved");
+        assert_eq!(V::Stayed.as_str(), "stayed");
+        assert_eq!(V::Elsewhere.as_str(), "elsewhere");
+        assert_eq!(V::Missing.as_str(), "missing");
+    }
+
+    /// The discovery→migration composition: bucketing 53 declared repos
+    /// where only some moved yields exactly the `moved` set that
+    /// `workspaces.migrate_org` should receive as `members` — never
+    /// over-migrating the ones that stayed.
+    #[test]
+    fn test_org_diff_buckets_partial_migration() {
+        use super::OrgDiffVerdict as V;
+        let from = "hypermemetic";
+        let to = "hypermemetic-ai";
+        // Forge truth per repo. `Ok(owner)` is a resolved canonical owner;
+        // `Err(exists_at_to)` models a `not_found` at `from_org` plus the
+        // two-sided probe's answer at `to_org` (DEFECT 56fc3f38): a private
+        // repo whose source token lacks destination access 404s at the
+        // source but is recovered via the `to_org` probe.
+        let forge_truth: [(&str, Result<&str, bool>); 6] = [
+            ("alpha", Ok("hypermemetic-ai")), // moved (resolved)
+            ("beta", Ok("hypermemetic")),     // stayed
+            ("gamma", Ok("hypermemetic-ai")), // moved (resolved)
+            ("delta", Ok("third-party")),     // elsewhere
+            ("epsilon", Err(true)),  // transferred private: 404 at source, exists at to => moved
+            ("zeta", Err(false)),    // absent at both ends => missing
+        ];
+        let mut moved = Vec::new();
+        let mut stayed = Vec::new();
+        let mut elsewhere = Vec::new();
+        let mut missing = Vec::new();
+        for (repo, truth) in forge_truth {
+            let verdict = match truth {
+                Ok(owner) => V::classify(owner, from, to),
+                Err(exists_at_to) => V::classify_not_found_at_source(exists_at_to),
+            };
+            match verdict {
+                V::Moved => moved.push(repo),
+                V::Stayed => stayed.push(repo),
+                V::Elsewhere => elsewhere.push(repo),
+                V::Missing => missing.push(repo),
+            }
+        }
+        // The `moved` set is exactly what migrate_org's members must be —
+        // including the transferred private repo recovered by the probe.
+        assert_eq!(moved, vec!["alpha", "gamma", "epsilon"]);
+        assert_eq!(stayed, vec!["beta"]);
+        assert_eq!(elsewhere, vec!["delta"]);
+        assert_eq!(missing, vec!["zeta"]);
+    }
+}

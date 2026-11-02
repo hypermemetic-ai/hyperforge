@@ -269,6 +269,61 @@ pub struct GlobalConfig {
     pub default_workspace: Option<WorkspaceName>,
     #[serde(default)]
     pub provider_map: BTreeMap<DomainName, ProviderKind>,
+    /// Owner-alias identity (HYPE-5). Maps a **canonical** owner to the
+    /// list of alias owners that name the same identity — e.g.
+    /// `hypermemetic-ai: [hypermemetic]` (the org is canonical; the old
+    /// user path is an alias). When a repo moves user→org, GitHub
+    /// live-redirects the old owner, so the two strings are one identity;
+    /// this table lets every owner **comparison** agree on that without
+    /// rewriting any URL. Aliases are curated/directional — two owners
+    /// are equal only when the table says so, so a genuine unrelated
+    /// mismatch is still caught. Resolved through
+    /// [`GlobalConfig::canonical_owner`].
+    #[serde(default)]
+    pub owner_aliases: BTreeMap<OrgName, Vec<OrgName>>,
+}
+
+impl GlobalConfig {
+    /// Resolve `owner` to its canonical form through [`Self::owner_aliases`]
+    /// (HYPE-5). Identity when `owner` is already canonical or is unknown to
+    /// the table — so non-aliased owners are unchanged. This is the single
+    /// source of truth for owner-identity **comparison and display**; it
+    /// never rewrites URLs or `.git/config` and never performs migration.
+    #[must_use]
+    pub fn canonical_owner(&self, owner: &str) -> String {
+        for (canonical, aliases) in &self.owner_aliases {
+            // Forge owners are case-insensitive (GitHub `JuggernautLabs`
+            // is `juggernautlabs`): HYPERFORGE-58.
+            if canonical.as_str().eq_ignore_ascii_case(owner)
+                || aliases.iter().any(|a| a.as_str().eq_ignore_ascii_case(owner))
+            {
+                return canonical.0.clone();
+            }
+        }
+        owner.to_string()
+    }
+
+    /// True when two owner strings name the same canonical identity
+    /// (HYPE-5). Use this instead of `a == b` at every owner-comparison
+    /// site so aliased owners compare equal and unrelated owners do not.
+    #[must_use]
+    pub fn same_owner(&self, a: &str, b: &str) -> bool {
+        self.canonical_owner(a).eq_ignore_ascii_case(&self.canonical_owner(b))
+    }
+
+    /// Flatten the alias table to `alias -> canonical` pairs (HYPE-5).
+    /// Used to render the alias-aware pre-push hook, whose embedded
+    /// `_canon()` mirrors [`Self::canonical_owner`].
+    #[must_use]
+    pub fn owner_alias_pairs(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for (canonical, aliases) in &self.owner_aliases {
+            for a in aliases {
+                out.insert(a.0.clone(), canonical.0.clone());
+            }
+        }
+        out
+    }
 }
 
 /// An org's forge block.
@@ -588,6 +643,90 @@ mod tests {
         assert!(cfg.workspaces.is_empty());
     }
 
+    // ── HYPE-5: owner-alias identity ────────────────────────────────
+    fn aliased() -> GlobalConfig {
+        let mut owner_aliases = BTreeMap::new();
+        owner_aliases.insert(
+            OrgName::from("hypermemetic-ai"),
+            vec![OrgName::from("hypermemetic")],
+        );
+        GlobalConfig {
+            owner_aliases,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn canonical_owner_resolves_alias_and_is_identity_otherwise() {
+        let g = aliased();
+        // alias -> canonical; canonical -> itself; the two agree.
+        assert_eq!(g.canonical_owner("hypermemetic"), "hypermemetic-ai");
+        assert_eq!(g.canonical_owner("hypermemetic-ai"), "hypermemetic-ai");
+        assert_eq!(
+            g.canonical_owner("hypermemetic"),
+            g.canonical_owner("hypermemetic-ai")
+        );
+        assert!(g.same_owner("hypermemetic", "hypermemetic-ai"));
+        // an unrelated owner is unchanged and is NOT the alias identity.
+        assert_eq!(g.canonical_owner("someone-else"), "someone-else");
+        assert!(!g.same_owner("someone-else", "hypermemetic-ai"));
+        // with no aliases, canonical_owner is pure identity.
+        let plain = GlobalConfig::default();
+        assert_eq!(plain.canonical_owner("hypermemetic"), "hypermemetic");
+        assert!(!plain.same_owner("hypermemetic", "hypermemetic-ai"));
+    }
+
+    #[test]
+    fn owner_alias_pairs_flattens_alias_to_canonical() {
+        let pairs = aliased().owner_alias_pairs();
+        assert_eq!(
+            pairs.get("hypermemetic").map(String::as_str),
+            Some("hypermemetic-ai")
+        );
+        // the canonical owner is not itself an alias key.
+        assert!(!pairs.contains_key("hypermemetic-ai"));
+    }
+
+    #[test]
+    fn owner_aliases_round_trip_through_yaml() {
+        // deny_unknown_fields must accept the new key, and it must resolve.
+        let yaml = "owner_aliases:\n  hypermemetic-ai:\n    - hypermemetic\n";
+        let g: GlobalConfig = serde_yaml::from_str(yaml).expect("owner_aliases parses");
+        assert_eq!(g.canonical_owner("hypermemetic"), "hypermemetic-ai");
+    }
+
+    #[test]
+    fn aliased_repo_drift_and_orgdiff_agree() {
+        // all-sites-routed: the two drift/sync comparison shapes both agree
+        // on an aliased repo when routed through canonical_owner.
+        let g = aliased();
+        // config-drift (workspaces.rs reconcile): declared user owner vs
+        // workspace org — same identity, so NOT reported as drift.
+        assert!(
+            g.same_owner("hypermemetic", "hypermemetic-ai"),
+            "config-drift must treat the alias as agreement, not drift"
+        );
+        // org-diff classify (workspaces.rs org_diff): a repo registered under
+        // `hypermemetic-ai`, checked from `hypermemetic-ai` against some other
+        // target org, whose forge answer is the alias `hypermemetic`. Routed
+        // through canonical_owner it buckets as Stayed; on raw strings the
+        // alias would mismatch both `from` and `to` and wrongly bucket as
+        // Elsewhere.
+        use crate::v5::ops::repo::OrgDiffVerdict;
+        let forge_owner = g.canonical_owner("hypermemetic"); // forge says user
+        let from_org = g.canonical_owner("hypermemetic-ai");
+        let to_org = g.canonical_owner("other-org");
+        assert_eq!(
+            OrgDiffVerdict::classify(&forge_owner, &from_org, &to_org),
+            OrgDiffVerdict::Stayed,
+        );
+        // Sanity: on raw strings (no canonicalization) it would be Elsewhere.
+        assert_eq!(
+            OrgDiffVerdict::classify("hypermemetic", "hypermemetic-ai", "other-org"),
+            OrgDiffVerdict::Elsewhere,
+        );
+    }
+
     #[test]
     fn minimal_org_fixture_loads() {
         let cfg = load_all(&fixture_dir("minimal_org")).expect("minimal_org loads");
@@ -661,6 +800,7 @@ mod tests {
             provider_map: [(DomainName("github.com".into()), ProviderKind::Github)]
                 .into_iter()
                 .collect(),
+            ..Default::default()
         };
         let yaml = serde_yaml::to_string(&cfg).unwrap();
         let back: GlobalConfig = serde_yaml::from_str(&yaml).unwrap();

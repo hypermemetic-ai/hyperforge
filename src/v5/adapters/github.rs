@@ -450,6 +450,56 @@ impl ForgePort for GithubAdapter {
     }
 
 
+    /// Follow GitHub's rename/transfer redirect and report the repo's
+    /// CURRENT owner login. `GET /repos/{owner}/{name}` 301-redirects to
+    /// the new location after an org transfer or rename; reqwest follows
+    /// redirects by default, so the resolved body's `owner.login` is the
+    /// canonical owner. We prefer `owner.login`, falling back to the org
+    /// segment of `full_name` (`<owner>/<name>`).
+    async fn canonical_owner(
+        &self,
+        remote: &Remote,
+        repo_ref: &RepoRef,
+        auth: &ForgeAuth<'_>,
+    ) -> Result<String, ForgePortError> {
+        let _ = extract_host(remote.url.as_str()); // validate
+        let token = Self::token(auth).await?;
+        let client = Self::build_client()?;
+        let headers = Self::auth_headers(&token)?;
+        let url = self.api_url(repo_ref);
+
+        let resp = client
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| ForgePortError::network(format!("get {url}: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::map_status_error(status, &body));
+        }
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| ForgePortError::network(format!("parse github body: {e}")))?;
+        if let Some(login) = v
+            .get("owner")
+            .and_then(|o| o.get("login"))
+            .and_then(Value::as_str)
+        {
+            return Ok(login.to_string());
+        }
+        if let Some(full) = v.get("full_name").and_then(Value::as_str) {
+            if let Some((owner, _)) = full.split_once('/') {
+                return Ok(owner.to_string());
+            }
+        }
+        Err(ForgePortError::network(
+            "github repo response missing owner.login/full_name",
+        ))
+    }
+
     async fn rename_repo(
         &self,
         _remote: &Remote,

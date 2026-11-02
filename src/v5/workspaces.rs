@@ -256,6 +256,55 @@ pub enum WorkspacesEvent {
         behind: u32,
         errored: u32,
     },
+    /// Per-member result of `workspaces.migrate_org`: this member's
+    /// repo was moved to `new_org` (membership + config.toml + remotes).
+    MemberMigrated {
+        #[serde(rename = "ref")]
+        reference: crate::v5::repos::RepoRefWire,
+        old_org: String,
+        new_org: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        local_path: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        dry_run: bool,
+    },
+    /// Aggregate emitted after `workspaces.migrate_org`. Invariant:
+    /// `total == succeeded + errored`.
+    WorkspaceMigrateOrgSummary {
+        name: String,
+        total: u32,
+        succeeded: u32,
+        errored: u32,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        dry_run: bool,
+    },
+    /// Per-repo result of `workspaces.org_diff`: where this member's repo
+    /// actually lives on the forge right now. `declared_org` is what the
+    /// workspace/org yaml claims; `canonical_org` is the forge truth
+    /// (rename/transfer-following). `verdict` is one of `moved`, `stayed`,
+    /// `elsewhere`, `missing`.
+    OrgDiffEntry {
+        name: String,
+        declared_org: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        canonical_org: Option<String>,
+        verdict: String,
+    },
+    /// Aggregate of `workspaces.org_diff`. The `moved` list is the EXACT
+    /// `members` argument to pass to `workspaces.migrate_org` to migrate
+    /// only the repos that actually moved on the forge — composing the two
+    /// makes a partial org migration safe (no over-migrating the repos
+    /// that stayed). Invariant:
+    /// `total == moved.len() + stayed.len() + elsewhere.len() + missing.len()`.
+    OrgDiffSummary {
+        from_org: String,
+        to_org: String,
+        total: u32,
+        moved: Vec<String>,
+        stayed: Vec<String>,
+        elsewhere: Vec<String>,
+        missing: Vec<String>,
+    },
     /// V5PARITY-4: workspace-wide aggregate.
     WorkspaceAnalyticsSummary {
         name: String,
@@ -967,6 +1016,11 @@ impl WorkspacesService {
                 }
             };
             let _ = &target;
+            // HYPE-5: global config for owner-alias resolution in the
+            // config-drift scan below. Best-effort; missing/invalid → no
+            // aliases (identity comparison), preserving prior behavior.
+            let global = crate::v5::config::load_global(&config_dir.join("config.yaml"))
+                .unwrap_or_default();
             // Load orgs for URL → ref lookup.
             let orgs_dir = config_dir.join("orgs");
             let orgs = match crate::v5::config::load_orgs(&orgs_dir) {
@@ -1221,13 +1275,14 @@ impl WorkspacesService {
                         let bound = decisions.iter().find(|d| d.dir.as_deref() == Some(dname));
                         if let Some(dec) = bound {
                             let m = &members[dec.idx];
-                            let declared_ref = format!("{}/{}", hf_cfg.org.as_str(), hf_cfg.repo_name);
-                            let ws_ref = format!(
-                                "{}/{}",
-                                m.reference.org.as_str(),
-                                m.reference.name.as_str()
-                            );
-                            if declared_ref != ws_ref {
+                            // HYPE-5: owner half compares canonical identities,
+                            // so an aliased owner (declared user vs workspace
+                            // org, or vice-versa) is NOT reported as drift; only
+                            // a genuine owner or name divergence is.
+                            let owners_agree =
+                                global.same_owner(hf_cfg.org.as_str(), m.reference.org.as_str());
+                            let names_agree = hf_cfg.repo_name == m.reference.name.as_str();
+                            if !(owners_agree && names_agree) {
                                 yield WorkspacesEvent::ConfigDrift {
                                     dir: dname.clone(),
                                     declared_org: hf_cfg.org.as_str().to_string(),
@@ -2463,6 +2518,322 @@ impl WorkspacesService {
                 name: ws.name.as_str().to_string(),
                 total, ok, errored, unchanged,
                 dry_run: dry,
+            };
+        }
+    }
+
+    // ==================================================================
+    // Workspace-wide org migration.
+    // ==================================================================
+
+    /// Move workspace members to a different (already-registered) org.
+    ///
+    /// If `members` (JSON array of repo names) is given, migrate exactly
+    /// those; otherwise migrate ALL members whose org == `from_org`. The
+    /// target org `to_org` must already exist. Per-member failures are
+    /// isolated — a failing member emits an `error` event and the batch
+    /// continues. When a member is an `{ref, dir}` object, its local
+    /// `dir` is passed through so the checkout's `.hyperforge/config.toml`
+    /// org + git remotes get flipped too.
+    #[plexus_macros::method(params(
+        name = "Workspace name",
+        from_org = "Source org to move members off of",
+        to_org = "Target org (must already be registered)",
+        members = "Optional JSON array of repo names to migrate (default: all members in from_org)",
+        dry_run = "Preview only (default true); --dry-run false writes"
+    ))]
+    pub async fn migrate_org(
+        &self,
+        name: String,
+        from_org: String,
+        to_org: String,
+        members: Option<String>,
+        dry_run: Option<serde_json::Value>,
+    ) -> impl futures::Stream<Item = WorkspacesEvent> + Send + 'static {
+        let config_dir = self.config_dir.clone();
+        async_stream::stream! {
+            if from_org.is_empty() || to_org.is_empty() {
+                yield WorkspacesEvent::Error {
+                    code: Some("validation".into()),
+                    message: "missing required parameter 'from_org' or 'to_org'".into(),
+                };
+                return;
+            }
+            if from_org == to_org {
+                yield WorkspacesEvent::Error {
+                    code: Some("validation".into()),
+                    message: "'to_org' must differ from 'from_org'".into(),
+                };
+                return;
+            }
+            let dry = dry_run.as_ref().map_or(true, to_bool);
+            // Optional explicit member filter (repo names).
+            let name_filter: Option<Vec<String>> = match members.as_deref().map(str::trim) {
+                Some(s) if !s.is_empty() => {
+                    match serde_json::from_str::<Vec<String>>(s) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            yield WorkspacesEvent::Error {
+                                code: Some("validation".into()),
+                                message: format!("members must be a JSON array of names: {e}"),
+                            };
+                            return;
+                        }
+                    }
+                }
+                _ => None,
+            };
+            let (ws, loaded) = match load_iter_ctx(&config_dir, &name).await {
+                Ok(t) => t, Err(e) => { yield e; return; }
+            };
+            let ws_path = std::path::PathBuf::from(ws.path.as_str());
+            let mut total = 0u32; let mut succeeded = 0u32; let mut errored = 0u32;
+            for ctx in member_ctxs(&ws, &loaded, &ws_path) {
+                // Select members: explicit name list, else all in from_org.
+                let selected = match &name_filter {
+                    Some(names) => names.iter().any(|n| n == &ctx.reference.name),
+                    None => ctx.reference.org == from_org,
+                };
+                if !selected {
+                    continue;
+                }
+                // An explicitly-named member not in from_org is a no-op
+                // for migration but should still surface as an error so
+                // the caller knows it wasn't moved.
+                total += 1;
+                let dir_opt = ctx.dir.exists().then(|| ctx.dir.as_path());
+                match crate::v5::repos::migrate_one(
+                    &config_dir,
+                    &ctx.reference.org,
+                    &ctx.reference.name,
+                    &to_org,
+                    // Generic workspace migrate-org assumes github as the
+                    // migrating forge; doctor/heal pass the resolved
+                    // provider. HYPE-6.
+                    crate::v5::config::ProviderKind::Github,
+                    dir_opt,
+                    dry,
+                ) {
+                    Ok(outcome) => {
+                        succeeded += 1;
+                        yield WorkspacesEvent::MemberMigrated {
+                            reference: crate::v5::repos::RepoRefWire {
+                                org: to_org.clone(),
+                                name: ctx.reference.name.clone(),
+                            },
+                            old_org: ctx.reference.org.clone(),
+                            new_org: to_org.clone(),
+                            local_path: outcome.local_path,
+                            dry_run: dry,
+                        };
+                    }
+                    Err(msg) => {
+                        errored += 1;
+                        let body = msg.split_once(": ").map_or(msg.as_str(), |(_, b)| b);
+                        yield member_err(&ctx.reference, "migrate_org", body);
+                    }
+                }
+            }
+            yield WorkspacesEvent::WorkspaceMigrateOrgSummary {
+                name: ws.name.as_str().to_string(),
+                total, succeeded, errored,
+                dry_run: dry,
+            };
+        }
+    }
+
+    // ==================================================================
+    // Org-diff — discover what actually moved between two orgs.
+    // ==================================================================
+
+    /// Discover which workspace members ACTUALLY moved from `from_org` to
+    /// `to_org` on the forge — the read-only discovery half that makes a
+    /// partial org migration safe. For each member in scope, queries the
+    /// forge for the repo's CANONICAL owner (following GitHub's
+    /// rename/transfer redirect, equivalent to
+    /// `gh api repos/<org>/<name> --jq .owner.login`) and buckets it:
+    /// `moved` (canonical == to_org), `stayed` (== from_org),
+    /// `elsewhere` (some other org), `missing` (not found on forge).
+    ///
+    /// Scope: members whose declared org == `from_org` (or all members if
+    /// none match — but typically the workspace mixes both orgs after a
+    /// partial move). Read-only — writes NO config, moves NO repos.
+    /// Forge lookups are cached by repo name and per-repo errors are
+    /// isolated (a 404/rename buckets the repo; it never aborts the diff).
+    ///
+    /// COMPOSITION: the emitted `OrgDiffSummary.moved` list is the EXACT
+    /// `members` argument to pass to `workspaces.migrate_org(name,
+    /// from_org, to_org, members=<moved>)` — diff first to discover, then
+    /// migrate only what moved, never over-migrating the repos that stayed.
+    #[plexus_macros::method(params(
+        name = "Workspace name",
+        from_org = "Source org the repos were declared under",
+        to_org = "Target org to check whether each repo moved into"
+    ))]
+    pub async fn org_diff(
+        &self,
+        name: String,
+        from_org: String,
+        to_org: String,
+    ) -> impl futures::Stream<Item = WorkspacesEvent> + Send + 'static {
+        let config_dir = self.config_dir.clone();
+        async_stream::stream! {
+            if from_org.is_empty() || to_org.is_empty() {
+                yield WorkspacesEvent::Error {
+                    code: Some("validation".into()),
+                    message: "missing required parameter 'from_org' or 'to_org'".into(),
+                };
+                return;
+            }
+            if from_org == to_org {
+                yield WorkspacesEvent::Error {
+                    code: Some("validation".into()),
+                    message: "'to_org' must differ from 'from_org'".into(),
+                };
+                return;
+            }
+            let (ws, loaded) = match load_iter_ctx(&config_dir, &name).await {
+                Ok(t) => t, Err(e) => { yield e; return; }
+            };
+            let ws_path = std::path::PathBuf::from(ws.path.as_str());
+            let resolver = crate::v5::secrets::YamlSecretStore::new(&config_dir);
+
+            let mut total = 0u32;
+            let mut moved: Vec<String> = Vec::new();
+            let mut stayed: Vec<String> = Vec::new();
+            let mut elsewhere: Vec<String> = Vec::new();
+            let mut missing: Vec<String> = Vec::new();
+            // Cache forge lookups by repo name (a workspace may list the
+            // same repo twice across shapes; never re-hit the forge).
+            let mut cache: std::collections::HashMap<String, WorkspacesEvent> =
+                std::collections::HashMap::new();
+
+            for ctx in member_ctxs(&ws, &loaded, &ws_path) {
+                // Only diff members declared under from_org.
+                if ctx.reference.org != from_org {
+                    continue;
+                }
+                let repo_name = ctx.reference.name.clone();
+                if let Some(cached) = cache.get(&repo_name) {
+                    yield cached.clone();
+                    continue;
+                }
+                total += 1;
+
+                // Resolve the repo's canonical remote so we can pick a
+                // provider + credentials. No remote → missing (we can't
+                // ask the forge anything about it).
+                let Some(repo) = ctx.repo else {
+                    let entry = WorkspacesEvent::OrgDiffEntry {
+                        name: repo_name.clone(),
+                        declared_org: from_org.clone(),
+                        canonical_org: None,
+                        verdict: crate::v5::ops::repo::OrgDiffVerdict::Missing.as_str().into(),
+                    };
+                    missing.push(repo_name.clone());
+                    cache.insert(repo_name.clone(), entry.clone());
+                    yield entry;
+                    continue;
+                };
+                let Some(remote) = crate::v5::ops::repo::canonical_remote_in_scope(
+                    repo, &loaded.global.provider_map,
+                ) else {
+                    let entry = WorkspacesEvent::OrgDiffEntry {
+                        name: repo_name.clone(),
+                        declared_org: from_org.clone(),
+                        canonical_org: None,
+                        verdict: crate::v5::ops::repo::OrgDiffVerdict::Missing.as_str().into(),
+                    };
+                    missing.push(repo_name.clone());
+                    cache.insert(repo_name.clone(), entry.clone());
+                    yield entry;
+                    continue;
+                };
+                let provider = match crate::v5::repos::derive_provider(remote, &loaded.global.provider_map) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let err = WorkspacesEvent::Error {
+                            code: Some("network".into()),
+                            message: format!("{repo_name}: derive provider: {e}"),
+                        };
+                        cache.insert(repo_name.clone(), err.clone());
+                        yield err;
+                        continue;
+                    }
+                };
+                let org_cfg = loaded.orgs.get(&crate::v5::config::OrgName::from(from_org.as_str()));
+                let token_ref = org_cfg
+                    .and_then(|o| crate::v5::ops::repo::token_ref_scoped(o, provider))
+                    .map(|s| s.to_string());
+                let fallback_token_ref =
+                    Some(crate::v5::ops::repo::provider_default_token_ref(provider));
+                let repo_ref = crate::v5::config::RepoRef {
+                    org: crate::v5::config::OrgName::from(from_org.as_str()),
+                    name: crate::v5::config::RepoName::from(repo_name.as_str()),
+                };
+
+                // Query the forge for the canonical owner (follows renames).
+                let event = match crate::v5::ops::repo::canonical_owner_on_forge(
+                    remote,
+                    &repo_ref,
+                    &loaded.global.provider_map,
+                    &resolver,
+                    token_ref.as_deref(),
+                    fallback_token_ref,
+                ).await {
+                    Ok(owner) => {
+                        // HYPE-5: compare canonical owners so an aliased owner
+                        // (e.g. the forge answers `hypermemetic` for a repo
+                        // registered under `hypermemetic-ai`) buckets as the
+                        // same identity, not `Elsewhere`.
+                        let verdict = crate::v5::ops::repo::OrgDiffVerdict::classify(
+                            &loaded.global.canonical_owner(&owner),
+                            &loaded.global.canonical_owner(&from_org),
+                            &loaded.global.canonical_owner(&to_org),
+                        );
+                        match verdict {
+                            crate::v5::ops::repo::OrgDiffVerdict::Moved => moved.push(repo_name.clone()),
+                            crate::v5::ops::repo::OrgDiffVerdict::Stayed => stayed.push(repo_name.clone()),
+                            crate::v5::ops::repo::OrgDiffVerdict::Elsewhere => elsewhere.push(repo_name.clone()),
+                            crate::v5::ops::repo::OrgDiffVerdict::Missing => missing.push(repo_name.clone()),
+                        }
+                        WorkspacesEvent::OrgDiffEntry {
+                            name: repo_name.clone(),
+                            declared_org: from_org.clone(),
+                            canonical_org: Some(owner),
+                            verdict: verdict.as_str().into(),
+                        }
+                    }
+                    Err(e) if e.class == crate::v5::adapters::ForgeErrorClass::NotFound => {
+                        missing.push(repo_name.clone());
+                        WorkspacesEvent::OrgDiffEntry {
+                            name: repo_name.clone(),
+                            declared_org: from_org.clone(),
+                            canonical_org: None,
+                            verdict: crate::v5::ops::repo::OrgDiffVerdict::Missing.as_str().into(),
+                        }
+                    }
+                    Err(e) => {
+                        // Auth/network/rate-limit: surface as an error
+                        // event but keep diffing the rest of the batch.
+                        WorkspacesEvent::Error {
+                            code: Some(e.class.as_str().into()),
+                            message: format!("{repo_name}: {}", e.message),
+                        }
+                    }
+                };
+                cache.insert(repo_name.clone(), event.clone());
+                yield event;
+            }
+
+            yield WorkspacesEvent::OrgDiffSummary {
+                from_org: from_org.clone(),
+                to_org: to_org.clone(),
+                total,
+                moved,
+                stayed,
+                elsewhere,
+                missing,
             };
         }
     }
