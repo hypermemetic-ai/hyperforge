@@ -8,7 +8,9 @@ license = "MIT"
 # HYPERFORGE-9: the deploy-driver contract is a crate of its own, a member
 # of this workspace (HYPERFORGE-7 `contract`).
 [workspace]
-members = [".", "driver"]
+members = [".", "driver", "vault"]
+# Unreviewed spike source with its own workspace: see its README.
+exclude = ["vault/spike"]
 
 [lib]
 name = "hyperforge"

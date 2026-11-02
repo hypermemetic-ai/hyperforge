@@ -1,0 +1,143 @@
+[package]
+name = "hyperforge-vault"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "A secret vault whose server cannot read what it stores: every read is approved by the owner"
+
+[lib]
+name = "hyperforge_vault"
+path = "src/lib.rs"
+
+# HYPE-15. A member of the hyperforge workspace, as driver/ is. The service is
+# behind the default feature `server`; default-features = false is the
+# client-only build, which the daemon and the Mac depend on: the library's
+# client and wire modules and the client binaries, with no plexus-core,
+# plexus-macros or plexus-transport.
+[[bin]]
+name = "hyperforge-vault"
+path = "src/bin/hyperforge-vault.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "vault-approve"
+path = "src/bin/vault-approve.rs"
+
+[[bin]]
+name = "vault-run"
+path = "src/bin/vault-run.rs"
+
+[[bin]]
+name = "vault-get"
+path = "src/bin/vault-get.rs"
+
+[[bin]]
+name = "vault-encrypt"
+path = "src/bin/vault-encrypt.rs"
+
+[[bin]]
+name = "vault-login"
+path = "src/bin/vault-login.rs"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+required-features = ["server"]
+
+[[test]]
+name = "interop"
+path = "tests/interop.rs"
+
+[[test]]
+name = "platform"
+path = "tests/platform.rs"
+
+[[test]]
+name = "enclave"
+path = "tests/enclave.rs"
+
+[[test]]
+name = "owner_seam"
+path = "tests/owner_seam.rs"
+required-features = ["server"]
+
+[[test]]
+name = "gate"
+path = "tests/gate.rs"
+required-features = ["server"]
+
+[[test]]
+name = "login"
+path = "tests/login.rs"
+required-features = ["server"]
+
+[features]
+default = ["server"]
+server = [
+    "plexus-auth-core/adapters",
+    "dep:plexus-core",
+    "dep:plexus-macros",
+    "dep:plexus-transport",
+    "dep:jsonrpsee",
+    "dep:uuid",
+    "dep:async-stream",
+    "dep:async-trait",
+    "dep:schemars",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+]
+# Keeps vault-approve and vault-encrypt dumpable when VAULT_TEST_KEEP_DUMPABLE is
+# set, so the test suite can read their memory. For tests only: without this
+# feature the switch does not exist. Never build a real tool with it.
+memory-scan-test = []
+
+[dependencies]
+# The client half of plexus; `ws-native` is its WebSocket.
+plexus-client = { version = "0.7", features = ["ws-native"] }
+age = { version = "0.12", features = ["armor"] }
+# The types in the age traits, and the Bech32 of age's own key strings.
+age-core = "0.12"
+bech32 = "0.11"
+# What `src/p256tag.rs` needs of HPKE. `age` holds all of these already.
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+p256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+sha2 = "0.10"
+zeroize = "1"
+libc = "0.2"
+humantime = "2"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+# vault-login and the owner's token refresh: HTTPS to WorkOS on the client half.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
+# vault-login's check of what WorkOS answered, the one the server makes: JWKS,
+# signature, issuer and client. Not a server crate: no transport, no RPC. The
+# `server` feature adds `adapters`: the namespaced Principal, which plexus-core
+# does not re-export, OidcAdapter and Carriers.
+plexus-auth-core = { version = "0.2", features = ["oidc-reqwest"] }
+
+# The latest published plexus line, from crates.io, as the workspace is.
+plexus-core = { version = "0.7", optional = true }
+plexus-macros = { version = "0.7", optional = true }
+plexus-transport = { version = "0.6", default-features = false, optional = true }
+# The activation macro's expansion names these two directly.
+jsonrpsee = { version = "0.26", features = ["server", "macros"], optional = true }
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+async-stream = { version = "0.3", optional = true }
+async-trait = { version = "0.1", optional = true }
+schemars = { version = "1", features = ["derive"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+jsonwebtoken = "9"
+# The software stand-in for the Secure Enclave: tests only, here and nowhere else.
+p256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

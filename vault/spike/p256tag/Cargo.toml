@@ -1,0 +1,3 @@
+[workspace]
+members = ["p256tag-core", "vault-demo"]
+resolver = "2"
