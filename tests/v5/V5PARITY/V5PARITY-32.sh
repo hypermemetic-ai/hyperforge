@@ -13,14 +13,14 @@ case "$ver" in
     *)   echo "FAIL: expected 5.x, got $ver" >&2; exit 1 ;;
 esac
 
-# --- (2) Binary entries: hyperforge points at v5 source; legacy preserved ---
+# --- (2) Binary entries: hyperforge points at v5 source; v4 is gone ---
 grep -A 1 'name = "hyperforge"$' Cargo.toml | grep -q 'src/bin/hyperforge.rs' \
     || { echo "FAIL: [[bin]] hyperforge does not point at src/bin/hyperforge.rs" >&2; exit 1; }
-grep -q 'name = "hyperforge-legacy"' Cargo.toml \
-    || { echo "FAIL: hyperforge-legacy bin entry missing" >&2; exit 1; }
+! grep -q 'name = "hyperforge-legacy"' Cargo.toml \
+    || { echo "FAIL: hyperforge-legacy came back" >&2; exit 1; }
 grep -q 'name = "hyperforge-v5"' Cargo.toml \
     || { echo "FAIL: hyperforge-v5 alias missing (needed for in-flight tests)" >&2; exit 1; }
-echo "binaries: hyperforge (canonical), hyperforge-v5 (alias), hyperforge-legacy (v4)"
+echo "binaries: hyperforge (canonical), hyperforge-v5 (alias)"
 
 # --- (3) hyperforge.rs is the v5 source (recognizable by HyperforgeService use) ---
 grep -q "use hyperforge::v5::service::HyperforgeService" src/bin/hyperforge.rs \

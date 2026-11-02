@@ -18,7 +18,7 @@
 #   - Installs ghcup toolchain into ~/.ghcup/
 #   - Runs `gh auth login -w` if not authenticated (opens browser, prints code)
 #   - Starts hyperforge server in background (port 44104) if not running
-#   - Writes GitHub token into hyperforge-auth secrets
+#   - Writes GitHub token into the secret store
 #   - Configures gh as git credential helper (via `gh auth setup-git`)
 
 set -euo pipefail
@@ -122,8 +122,8 @@ for _ in $(seq 1 30); do
 done
 ss -tln 2>/dev/null | grep -q ":${SERVICE_PORT} " || die "hyperforge did not open port $SERVICE_PORT"
 
-# --- 6. Stash GitHub token in hyperforge-auth ---------------------------------
-log "Storing GitHub token in hyperforge-auth (secrets.yaml)"
+# --- 6. Stash GitHub token in the secret store ---------------------------------
+log "Storing GitHub token in secrets.yaml"
 synapse -P "$AUTH_PORT" secrets auth set_secret \
   --secret_key "github/$ORG/token" \
   --value "$(gh auth token)" >/dev/null

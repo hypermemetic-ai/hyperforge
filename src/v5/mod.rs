@@ -1,8 +1,7 @@
-//! Hyperforge v5 — ground-up rewrite living alongside v4.
+//! Hyperforge v5.
 //!
 //! Design invariants and epic docs live under `plans/v5/`. This module
-//! holds the v5 activation tree, config loaders, and secret store. The
-//! v4 activation tree in `crate::service` / `crate::services` is untouched.
+//! holds the activation tree, config loaders, and secret store.
 
 pub mod adapters;
 pub mod build;

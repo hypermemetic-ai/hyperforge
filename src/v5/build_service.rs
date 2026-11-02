@@ -271,7 +271,7 @@ fn one_repo_cabal_package(dir: &std::path::Path, channel: Option<&str>) -> Resul
     if !asked && (channel.is_some() || dir.join("Cargo.toml").is_file()) {
         return Ok(None);
     }
-    match crate::build_system::cabal::cabal_package_name(dir) {
+    match crate::v5::build::cabal::cabal_package_name(dir) {
         Some(name) => Ok(Some(name)),
         None if asked => Err(format!("no .cabal package in {}", dir.display())),
         None => Ok(None),

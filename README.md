@@ -7,7 +7,7 @@ Hyperforge syncs repositories across GitHub, Codeberg, and GitLab via direct RES
 ## Install
 
 ```bash
-cargo install --path .   # produces hyperforge, hyperforge-auth, hyperforge-ssh, hyperforge-legacy
+cargo install --path .   # produces hyperforge and hyperforge-v5
 ```
 
 ## Quick start
@@ -40,9 +40,6 @@ That's the whole flow. See `docs/v5/getting-started.md` for the long version.
 | Binary | Default port | Role |
 |---|---|---|
 | `hyperforge` | 44104 | Daemon: orgs, repos, workspaces, secrets, build (the canonical v5 surface) |
-| `hyperforge-auth` | — | Secrets sidecar (YAML-backed secret store; v5 embeds it but the standalone binary is preserved) |
-| `hyperforge-ssh` | — | SSH key management CLI (`V5PARITY-31` — currently only available on `hyperforge-legacy`; v5 covers the runtime via `repos.set_ssh_key`) |
-| `hyperforge-legacy` | 44104 | The pre-5.0.0 daemon, preserved for one release cycle |
 
 ## Architecture at a glance
 
@@ -312,11 +309,11 @@ Per-repo identity lives in `<repo>/.hyperforge/config.toml`. Distribution config
 If you ran v4: see `MIGRATION.md`. Short version:
 - `secrets.yaml` is file-compatible across versions.
 - `orgs/<name>/repos.yaml` (v4 LocalForge) is **not** read by v5; v5 writes a single `orgs/<name>.yaml` with the repo registry inline.
-- The `hyperforge` binary is now v5; the v4 daemon is preserved one release as `hyperforge-legacy`.
+- v4 is gone: `hyperforge-legacy`, `hyperforge-auth` and `hyperforge-ssh` are removed. The commit before HYPERFORGE-52 is the last with their source.
 
 ## Status
 
-Production-ready for daily use. Twenty-five `V5PARITY-*` tickets shipped (see `plans/v5/V5PARITY/`); four v4-only features remain queued (release-asset upload, gitignore-sync, workspace check/verify, hyperforge-ssh CLI). Everything else from v4 is reachable.
+Production-ready for daily use. Twenty-five `V5PARITY-*` tickets shipped (see `plans/v5/V5PARITY/`); v4 features not carried over: release-asset upload, gitignore-sync, workspace check/verify. SSH keys are set per repo as `core.sshCommand` (`repos set_ssh_key`), in place of the `hyperforge-ssh` wrapper. Everything else from v4 is reachable.
 
 ## License
 

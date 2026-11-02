@@ -2,7 +2,15 @@
 
 use std::path::Path;
 
-use super::{BinaryTarget, BuildSystemKind, DepRef};
+/// A dependency a `.cabal` file names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepRef {
+    pub name: String,
+    pub version_req: Option<String>,
+    pub is_path_dep: bool,
+    pub path: Option<String>,
+    pub is_dev: bool,
+}
 
 /// Check if a directory contains a .cabal file
 pub fn is_cabal_project(path: &Path) -> bool {
@@ -48,45 +56,6 @@ fn parse_cabal_field(content: &str, field: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Detect binary targets from a .cabal file
-///
-/// Parses `executable {name}` stanzas to find binary names.
-pub fn cabal_binary_targets(path: &Path) -> Vec<BinaryTarget> {
-    let cabal_path = match find_cabal_file(path) {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
-
-    let content = match std::fs::read_to_string(&cabal_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    let repo_path = path.to_path_buf();
-    let mut targets = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        // executable stanzas start at column 0 (not indented)
-        if !line.starts_with(' ') && !line.starts_with('\t') {
-            if let Some(name) = trimmed
-                .strip_prefix("executable")
-                .map(|rest| rest.trim().to_string())
-            {
-                if !name.is_empty() {
-                    targets.push(BinaryTarget {
-                        name,
-                        build_system: BuildSystemKind::Cabal,
-                        repo_path: repo_path.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    targets
 }
 
 /// Parse dependencies from a .cabal file
@@ -275,73 +244,6 @@ executable test-exe
         let aeson = deps.iter().find(|d| d.name == "aeson").unwrap();
         assert_eq!(aeson.version_req, Some(">=2.0".to_string()));
         assert!(!aeson.is_path_dep);
-    }
-
-    #[test]
-    fn test_cabal_binary_targets_single() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(
-            tmp.path().join("synapse.cabal"),
-            r"name:           synapse
-version:        0.2.0
-
-library
-  build-depends: base >=4.7
-
-executable synapse
-  main-is: Main.hs
-  build-depends: base >=4.7
-",
-        )
-        .unwrap();
-
-        let targets = cabal_binary_targets(tmp.path());
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].name, "synapse");
-        assert_eq!(targets[0].build_system, super::BuildSystemKind::Cabal);
-    }
-
-    #[test]
-    fn test_cabal_binary_targets_multiple() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(
-            tmp.path().join("myapp.cabal"),
-            r"name:           myapp
-version:        1.0.0
-
-library
-  build-depends: base
-
-executable myapp
-  main-is: Main.hs
-
-executable myapp-migrate
-  main-is: Migrate.hs
-
-executable myapp-worker
-  main-is: Worker.hs
-",
-        )
-        .unwrap();
-
-        let targets = cabal_binary_targets(tmp.path());
-        assert_eq!(targets.len(), 3);
-        assert!(targets.iter().any(|t| t.name == "myapp"));
-        assert!(targets.iter().any(|t| t.name == "myapp-migrate"));
-        assert!(targets.iter().any(|t| t.name == "myapp-worker"));
-    }
-
-    #[test]
-    fn test_cabal_binary_targets_lib_only() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(
-            tmp.path().join("mylib.cabal"),
-            "name: mylib\nversion: 0.1.0\n\nlibrary\n  build-depends: base\n",
-        )
-        .unwrap();
-
-        let targets = cabal_binary_targets(tmp.path());
-        assert!(targets.is_empty());
     }
 
     #[test]

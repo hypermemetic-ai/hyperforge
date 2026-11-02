@@ -80,15 +80,23 @@ __hf_find_bin() {
 # other on the OS's port allocation and produced flaky failures in
 # v5core_10 / v5lifecycle_8 / v5orgs_4 / v5repos_4.
 __hf_pick_port() {
-    python3 -c '
+    # Scripts run in parallel, and a port the kernel gives out is free again
+    # the moment this probe closes it: each is reserved by a directory until
+    # teardown, so two daemons are never handed one port.
+    local port
+    while :; do
+        port="$(python3 -c '
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", 0))
-port = s.getsockname()[1]
+print(s.getsockname()[1])
 s.close()
-print(port)
-'
+')"
+        find "${TMPDIR:-/tmp}" -maxdepth 1 -name "hf-port-*" -mmin +15 -exec rmdir {} + 2>/dev/null || true
+        mkdir "${TMPDIR:-/tmp}/hf-port-$port" 2>/dev/null && break
+    done
+    echo "$port"
 }
 
 # Wait until the daemon responds to a basic synapse query or the deadline
@@ -144,6 +152,7 @@ hf_spawn() {
 # CONTRACTS §harness contract: removes $HF_CONFIG on every invocation.
 # For save/respawn patterns, copy to an external tempdir before teardown.
 hf_teardown() {
+    [[ -z "${HF_PORT:-}" ]] || rmdir "${TMPDIR:-/tmp}/hf-port-$HF_PORT" 2>/dev/null || true
     if [[ -n "${HF_PID:-}" ]]; then
         if kill -0 "$HF_PID" 2>/dev/null; then
             kill "$HF_PID" 2>/dev/null || true

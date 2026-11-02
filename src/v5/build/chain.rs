@@ -138,7 +138,7 @@ pub fn discover(repos: &[(String, PathBuf)]) -> Chain {
 /// The `.cabal` package at a repo's root. A test-suite's dependencies count
 /// as the library's: `build-depends` is read without its stanzas.
 fn discover_cabal(chain: &mut Chain, repo: &str, dir: &Path) {
-    use crate::build_system::cabal;
+    use crate::v5::build::cabal;
     let Some(manifest) = cabal::find_cabal_file(dir) else { return };
     let (Some(name), Some(version)) = (cabal::cabal_package_name(dir), cabal::cabal_package_version(dir)) else {
         chain.warnings.push(format!("{repo}: {}: no name or no version", manifest.display()));
@@ -802,7 +802,6 @@ pub fn registry_status(local: &str, published: &[Published]) -> (&'static str, O
 /// does not read.
 #[must_use]
 pub fn pvp_status(local: &str, published: &[Published]) -> (&'static str, Option<String>) {
-    use crate::build_system::version::compare_versions;
     use std::cmp::Ordering;
     let cmp = |a: &str, b: &str| compare_versions(a, b).unwrap_or(Ordering::Equal);
     let latest = published
@@ -960,6 +959,32 @@ pub fn patch_config(entries: &[(String, PathBuf)]) -> String {
         s.push_str(&format!("\"{name}\" = {{ path = \"{path}\" }}\n"));
     }
     s
+}
+
+/// Compare two version strings. Handles both 3-part semver (1.2.3) and
+/// 4-part PVP (0.3.0.0) by comparing numeric parts left-to-right,
+/// padding the shorter version with zeros.
+pub fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let a = a.strip_prefix('v').unwrap_or(a).trim();
+    let b = b.strip_prefix('v').unwrap_or(b).trim();
+
+    let a_parts: Vec<u64> = a.split('.').map(|p| p.parse().ok()).collect::<Option<Vec<_>>>()?;
+    let b_parts: Vec<u64> = b.split('.').map(|p| p.parse().ok()).collect::<Option<Vec<_>>>()?;
+
+    if a_parts.is_empty() || b_parts.is_empty() {
+        return None;
+    }
+
+    let max_len = a_parts.len().max(b_parts.len());
+    for i in 0..max_len {
+        let a_val = a_parts.get(i).copied().unwrap_or(0);
+        let b_val = b_parts.get(i).copied().unwrap_or(0);
+        match a_val.cmp(&b_val) {
+            std::cmp::Ordering::Equal => {}
+            other => return Some(other),
+        }
+    }
+    Some(std::cmp::Ordering::Equal)
 }
 
 #[cfg(test)]

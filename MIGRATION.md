@@ -1,5 +1,7 @@
 # Migrating from hyperforge v4 to v5
 
+> v4 is gone as of HYPERFORGE-52: `hyperforge-legacy`, `hyperforge-auth` and `hyperforge-ssh` no longer exist.
+
 v5.0.0 (V5PARITY-32) makes v5 the canonical `hyperforge` binary. This doc explains what changes for an existing v4 user and how to do the handoff.
 
 ## TL;DR

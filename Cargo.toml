@@ -27,27 +27,11 @@ path = "src/bin/hyperforge.rs"
 name = "hyperforge-v5"
 path = "src/bin/hyperforge.rs"
 
-# --- one-release courtesy: the v4 source kept under hyperforge-legacy.
-# v4's wire surface is unchanged from 4.1.3 — anyone with hard-coded
-# automation runs `hyperforge-legacy` and gets the old code. Will be
-# removed in 6.0.0.
-[[bin]]
-name = "hyperforge-legacy"
-path = "src/bin/hyperforge-legacy.rs"
-
-[[bin]]
-name = "hyperforge-auth"
-path = "src/bin/hyperforge-auth.rs"
-
-[[bin]]
-name = "hyperforge-ssh"
-path = "src/bin/hyperforge-ssh.rs"
-
 [dependencies]
 # Service framework integration
 plexus-core = "0.7.0"
 plexus-macros = "0.7.0"
-plexus-transport = { version = "0.6.0", features = ["mcp"] }  # hyperforge-legacy --mcp
+plexus-transport = "0.6.0"
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -74,8 +58,6 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "1"
 
-# Git operations
-regex = "1"
 
 # JSON-RPC (required by plexus-macros)
 jsonrpsee = { version = "0.26", features = ["server", "macros"] }
@@ -90,12 +72,7 @@ clap = { version = "4", features = ["derive"] }
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "multipart", "native-tls-vendored"] }
 
-# Container/OCI
-bollard = "0.18"
-oci-client = { version = "0.14", default-features = false, features = ["native-tls"] }
 
-# Crypto
-sha2 = "0.10"
 
 # Utilities
 dirs = "5"

@@ -7,7 +7,7 @@
 //! stopping half-way.
 //!
 //! HYPERFORGE-26: Cabal packages take the same road to Hackage, each its own
-//! group; [`crate::package::hackage::HackageClient`] is the registry and the
+//! group; [`crate::v5::build::hackage::HackageClient`] is the registry and the
 //! `cabal` commands.
 
 use std::collections::{BTreeMap, HashMap};
@@ -17,7 +17,7 @@ use std::process::Stdio;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::chain::{self, Chain, CrateNode, PackageKind, Published, Registry};
-use crate::package::hackage::HackageClient;
+use crate::v5::build::hackage::HackageClient;
 use crate::v5::build_service::BuildEvent;
 
 type Tx = UnboundedSender<BuildEvent>;
