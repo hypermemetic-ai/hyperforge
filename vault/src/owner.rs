@@ -14,9 +14,9 @@
 //! store that skips the check does not compile. Being let in is not being the
 //! owner: a machine passes the door and never the owner's half of the gate.
 //!
-//! The identity is the only thing a method can read. Over WebSocket the hub
+//! The identity is the only thing a method can read. Over WebSocket the service
 //! takes `AuthContext` from the connection's extensions and routes with no raw
-//! context (`DynamicHub::arc_into_rpc_module` calls `route`, which passes
+//! context (`DynamicService::arc_into_rpc_module` calls `route`, which passes
 //! `raw_ctx: None`), so the peer address and the headers never reach a method;
 //! "loopback only" cannot be enforced here. That is why machines hold a
 //! credential.

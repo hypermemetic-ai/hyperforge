@@ -96,8 +96,12 @@ impl World {
         }
         fs::write(&recipients, lines).unwrap();
         let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
+            // Below the ephemeral range, one per world: a port the kernel
+            // picked and we let go of can go to another world's fake IdP
+            // before this world's server binds it, and a client then reaches
+            // the wrong server.
+            static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+            20_000 + (std::process::id() % 5_000) as u16 * 2 + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2_000
         };
         let canary = canary_line();
         let value = format!("{canary}\nsecond line\n").into_bytes();

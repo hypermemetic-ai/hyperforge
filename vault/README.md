@@ -150,7 +150,7 @@ Every method is gated. Two checks, kept apart:
 | `result` | any request | its own requests; anyone else's reads as no such request |
 | `put`, `list`, `pending`, `watch`, `get_request`, `fulfill`, `deny`, `audit` | yes | no |
 
-A method can read the identity and nothing else. Over WebSocket the hub routes with no
+A method can read the identity and nothing else. Over WebSocket the service routes with no
 raw request context, so the peer address and headers never reach a method; a check on
 "came from loopback" is not possible at this layer. That is why machines hold a
 credential: a random token, of which the server holds only the sha256.

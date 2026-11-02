@@ -10,7 +10,8 @@ use hyperforge_vault::owner::OwnerGate;
 use hyperforge_vault::server::{activation::VaultActivation, Store};
 use hyperforge_vault::wire::SERVICE;
 use plexus_client::{decode, ClientEvent, MethodRef, Transport, WsTransport};
-use plexus_core::plexus::{AuthContext, DynamicHub, SessionValidator};
+use plexus_core::plexus::DynamicHub as DynamicService;
+use plexus_core::plexus::{AuthContext, SessionValidator};
 use plexus_transport::websocket::serve_websocket_with;
 use plexus_transport::{UpgradeOptions, WebSocketConfig};
 use serde_json::{json, Value};
@@ -42,8 +43,8 @@ struct Vault {
 async fn vault(gate: OwnerGate) -> Vault {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(dir.path(), Duration::from_secs(300), Duration::from_secs(60)).unwrap());
-    let service = Arc::new(DynamicHub::new(SERVICE).register(VaultActivation::new(store).with_owner(gate.clone())));
-    let module = DynamicHub::arc_into_rpc_module(service).unwrap();
+    let service = Arc::new(DynamicService::new(SERVICE).register(VaultActivation::new(store).with_owner(gate.clone())));
+    let module = DynamicService::arc_into_rpc_module(service).unwrap();
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let mut config = WebSocketConfig::new(0);
     config.addr = addr;
