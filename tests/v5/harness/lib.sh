@@ -11,6 +11,15 @@ __HF_HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 __HF_V5_TESTS_DIR="$(cd "$__HF_HARNESS_DIR/.." && pwd)"
 __HF_REPO_ROOT="$(cd "$__HF_V5_TESTS_DIR/../.." && pwd)"
 
+# Every daemon here listens on a throwaway port, and a held synapse
+# connection outlives its server by the hold window: one test run left
+# 1,400 orphaned `synapse _hold` processes on 2026-11-02 (SYNAPSE-40).
+# Each synapse call dials its own connection instead.
+export SYNAPSE_NO_HOLD=1
+# synapse dies writing non-ASCII under a non-UTF-8 locale; a test run
+# from a bare shell must not fail on that.
+case "${LC_ALL:-${LANG:-}}" in *UTF-8*|*utf8*) ;; *) export LC_ALL=C.UTF-8 ;; esac
+
 # synapse(1) writes human-readable diagnostics (e.g. the "Available
 # backends" listing shown when a subcommand isn't recognised) to stderr
 # while keeping stdout for RPC output. Tests that pipe `synapse -P <port>
