@@ -39,6 +39,63 @@ use crate::v5::secrets::{SecretResolver, YamlSecretStore};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RepoEvent {
+    /// `mirror`: what a push to one forge would send (dry run).
+    MirrorPlan {
+        #[serde(rename = "ref")]
+        reference: RepoRefWire,
+        url: String,
+        provider: String,
+        refspecs: Vec<String>,
+        /// The secret-store reference that will authenticate, or how git
+        /// will (`ssh`, `local`, `git credential helper`).
+        auth: String,
+    },
+    /// `mirror --execute`: one forge took the push (possibly in part).
+    MirrorPushed {
+        #[serde(rename = "ref")]
+        reference: RepoRefWire,
+        url: String,
+        provider: String,
+        updated: Vec<String>,
+        up_to_date: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rejected: Vec<String>,
+    },
+    /// `mirror --execute`: one forge could not be pushed to at all.
+    MirrorFailed {
+        #[serde(rename = "ref")]
+        reference: RepoRefWire,
+        url: String,
+        provider: String,
+        message: String,
+    },
+    /// `mirror`: a repo left out, and why.
+    MirrorSkipped {
+        #[serde(rename = "ref")]
+        reference: RepoRefWire,
+        reason: String,
+    },
+    /// `mirror --status`: one forge compared with the checkout.
+    MirrorStatus {
+        #[serde(rename = "ref")]
+        reference: RepoRefWire,
+        url: String,
+        provider: String,
+        /// `branch: same | missing | differs`
+        branches: Vec<String>,
+        tags_missing: u32,
+        tags_differ: u32,
+    },
+    /// `mirror`: the run, in counts.
+    MirrorSummary {
+        repos: u32,
+        remotes: u32,
+        planned: u32,
+        pushed: u32,
+        failed: u32,
+        skipped: u32,
+        dry_run: bool,
+    },
     /// `pr`: the pull request, or with `dry_run` what would be opened.
     PullRequest {
         repo: String,
@@ -2030,6 +2087,229 @@ impl ReposService {
                     error_class: None,
                     message: e.to_string(),
                 },
+            }
+        }
+    }
+
+    /// HYPERFORGE-60: push branches and tags to every forge a repo is
+    /// registered on (its org-yaml remotes), each with that forge's own
+    /// credential. Dry run unless `execute`; never forced.
+    #[plexus_macros::method(params(
+        workspace = "Workspace whose members to mirror (default: the configured default workspace)",
+        org = "Org: with `name`, one repo; otherwise narrows the workspace",
+        name = "Repo name: one repo, or narrows the workspace",
+        path = "Checkout of one repo (needs `org` and `name`)",
+        branches = "Branches to push (default: the checkout's current branch)",
+        all_branches = "Push every local branch (default false)",
+        tags = "Push every tag (default true)",
+        status = "Compare each forge with the checkout; push nothing (default false)",
+        execute = "Push (default false: plan only)"
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn mirror(
+        &self,
+        workspace: Option<String>,
+        org: Option<String>,
+        name: Option<String>,
+        path: Option<String>,
+        branches: Option<Vec<String>>,
+        all_branches: Option<bool>,
+        tags: Option<bool>,
+        status: Option<bool>,
+        execute: Option<bool>,
+    ) -> impl Stream<Item = RepoEvent> + Send + 'static {
+        use crate::v5::ops::mirror as m;
+        let config_dir = self.config_dir.clone();
+        stream! {
+            let status_mode = status.unwrap_or(false);
+            let do_execute = execute.unwrap_or(false);
+            if status_mode && do_execute {
+                yield validation_event("`status` and `execute` are exclusive");
+                return;
+            }
+            let all_b = all_branches.unwrap_or(false);
+            let with_tags = tags.unwrap_or(true);
+            let loaded = match load_all(&config_dir) {
+                Ok(l) => l,
+                Err(e) => { yield cfg_error_event(e); return; }
+            };
+            let resolver = YamlSecretStore::new(&config_dir);
+            let trim = |s: &Option<String>| s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+            let (org_f, name_f, path_f) = (trim(&org), trim(&name), trim(&path));
+
+            // (org, name, checkout dir)
+            let mut members: Vec<(String, String, PathBuf)> = Vec::new();
+            if let Some(p) = path_f {
+                let (Some(o), Some(n)) = (org_f.clone(), name_f.clone()) else {
+                    yield validation_event("`path` needs `org` and `name`");
+                    return;
+                };
+                members.push((o, n, PathBuf::from(p)));
+            } else {
+                let ws_name = trim(&workspace)
+                    .map(|w| crate::v5::config::WorkspaceName::from(w.as_str()))
+                    .or_else(|| loaded.global.default_workspace.clone());
+                let Some(ws_name) = ws_name else {
+                    yield validation_event("no `workspace` given and no default_workspace configured");
+                    return;
+                };
+                let Some(ws) = loaded.workspaces.get(&ws_name) else {
+                    yield not_found_event(format!("workspace '{}' not found", ws_name.as_str()));
+                    return;
+                };
+                let root = PathBuf::from(ws.path.as_str());
+                for entry in &ws.repos {
+                    let (o, n, dir) = match entry {
+                        crate::v5::config::WorkspaceRepo::Shorthand(s) => match s.split_once('/') {
+                            Some((o, n)) => (o.to_string(), n.to_string(), n.to_string()),
+                            None => continue,
+                        },
+                        crate::v5::config::WorkspaceRepo::Object { reference, dir } => (
+                            reference.org.as_str().to_string(),
+                            reference.name.as_str().to_string(),
+                            dir.clone(),
+                        ),
+                    };
+                    if org_f.as_deref().is_some_and(|f| f != o) || name_f.as_deref().is_some_and(|f| f != n) {
+                        continue;
+                    }
+                    members.push((o, n, root.join(dir)));
+                }
+                if members.is_empty() {
+                    yield validation_event("no workspace member matched `org`/`name`");
+                    return;
+                }
+            }
+
+            let (mut repos_n, mut remotes_n, mut planned, mut pushed, mut failed, mut skipped) = (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+            let mut failures: Vec<String> = Vec::new();
+            for (o, n, dir) in members {
+                repos_n += 1;
+                let reference = RepoRefWire { org: o.clone(), name: n.clone() };
+                let Some(org_cfg) = loaded.orgs.get(&OrgName::from(o.as_str())) else {
+                    skipped += 1;
+                    yield RepoEvent::MirrorSkipped { reference, reason: format!("org '{o}' is not configured") };
+                    continue;
+                };
+                let Some(repo) = find_repo(org_cfg, &n) else {
+                    skipped += 1;
+                    yield RepoEvent::MirrorSkipped { reference, reason: format!("'{o}/{n}' is not registered on its org") };
+                    continue;
+                };
+                if !dir.join(".git").exists() {
+                    skipped += 1;
+                    yield RepoEvent::MirrorSkipped { reference, reason: format!("no checkout at {}", dir.display()) };
+                    continue;
+                }
+                let (targets, unknown) = m::targets(repo, &loaded.global.provider_map);
+                for u in unknown {
+                    yield RepoEvent::MirrorSkipped { reference: reference.clone(), reason: u };
+                }
+                if targets.is_empty() {
+                    skipped += 1;
+                    yield RepoEvent::MirrorSkipped { reference, reason: "no registered remote in its forge scope".into() };
+                    continue;
+                }
+                let names: Vec<String> = match branches.as_ref().filter(|b| !b.is_empty()) {
+                    Some(b) => b.clone(),
+                    None if all_b => Vec::new(),
+                    None => match crate::v5::ops::git::status(&dir).ok().and_then(|s| s.branch) {
+                        Some(b) => vec![b],
+                        None if with_tags => Vec::new(),
+                        None => {
+                            skipped += 1;
+                            yield RepoEvent::MirrorSkipped { reference, reason: "detached HEAD and no `branches` given".into() };
+                            continue;
+                        }
+                    },
+                };
+                let specs = if status_mode {
+                    Vec::new()
+                } else {
+                    match m::refspecs(&dir, &names, all_b, with_tags) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            skipped += 1;
+                            yield RepoEvent::MirrorSkipped { reference, reason: e };
+                            continue;
+                        }
+                    }
+                };
+                for t in targets {
+                    remotes_n += 1;
+                    let provider = m::provider_label(t.provider).to_string();
+                    let cred = if m::is_http(&t.url) {
+                        let refs = m::credential_refs(org_cfg, t.provider, m::url_owner(&t.url).as_deref());
+                        m::resolve(&resolver, &refs)
+                    } else {
+                        None
+                    };
+                    if status_mode {
+                        match m::compare(&dir, &t, &names, all_b, cred.as_ref()) {
+                            Ok(c) => yield RepoEvent::MirrorStatus {
+                                reference: reference.clone(),
+                                url: t.url.clone(),
+                                provider,
+                                branches: c.branches.iter().map(|(b, s)| format!("{b}: {s}")).collect(),
+                                tags_missing: c.tags_missing,
+                                tags_differ: c.tags_differ,
+                            },
+                            Err(e) => {
+                                failed += 1;
+                                failures.push(format!("{o}/{n} → {}", t.url));
+                                yield RepoEvent::MirrorFailed { reference: reference.clone(), url: t.url.clone(), provider, message: e };
+                            }
+                        }
+                    } else if do_execute {
+                        match m::push(&dir, &t, &specs, cred.as_ref()) {
+                            Ok(p) => {
+                                if p.rejected.is_empty() { pushed += 1; } else {
+                                    failed += 1;
+                                    failures.push(format!("{o}/{n} → {} ({} refs rejected)", t.url, p.rejected.len()));
+                                }
+                                yield RepoEvent::MirrorPushed {
+                                    reference: reference.clone(),
+                                    url: t.url.clone(),
+                                    provider,
+                                    updated: p.updated,
+                                    up_to_date: p.up_to_date,
+                                    rejected: p.rejected,
+                                };
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                failures.push(format!("{o}/{n} → {}", t.url));
+                                yield RepoEvent::MirrorFailed { reference: reference.clone(), url: t.url.clone(), provider, message: e };
+                            }
+                        }
+                    } else {
+                        planned += 1;
+                        let auth = match (&cred, m::is_http(&t.url)) {
+                            (Some(c), _) => c.reference.clone(),
+                            (None, true) => "git credential helper (no token in the secret store)".into(),
+                            (None, false) if t.url.contains("://") && !t.url.starts_with("file://") => "ssh".into(),
+                            (None, false) if t.url.contains('@') => "ssh".into(),
+                            (None, false) => "local".into(),
+                        };
+                        yield RepoEvent::MirrorPlan { reference: reference.clone(), url: t.url.clone(), provider, refspecs: specs.clone(), auth };
+                    }
+                }
+            }
+            yield RepoEvent::MirrorSummary {
+                repos: repos_n,
+                remotes: remotes_n,
+                planned,
+                pushed,
+                failed,
+                skipped,
+                dry_run: !status_mode && !do_execute,
+            };
+            if !failures.is_empty() {
+                yield RepoEvent::Error {
+                    code: Some("partial".into()),
+                    error_class: None,
+                    message: format!("{} of {} forges failed: {}", failures.len(), remotes_n, failures.join("; ")),
+                };
             }
         }
     }

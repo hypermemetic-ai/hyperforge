@@ -31,6 +31,7 @@ take `--dry-run true`. Read the plan first.
 | cut a release of one repo, with files attached | [release](docs/workflows/release.md) |
 | publish crates, Cabal packages or npm packages | [publish](docs/workflows/publish.md) |
 | open a pull request | [pull requests](docs/workflows/pr.md) |
+| push to every forge a repo lives on | [mirroring](docs/workflows/mirroring.md) |
 | run pipelines | [CI](docs/workflows/ci.md) |
 | list, push or delete container images | [images](docs/workflows/images.md) |
 | store a token | [secrets](docs/workflows/secrets.md) |

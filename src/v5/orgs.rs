@@ -274,6 +274,7 @@ impl OrgsService {
                     provider,
                     credentials: Vec::new(),
                 },
+                mirrors: Vec::new(),
                 repos: Vec::new(),
             };
             let is_dry = dry_run.unwrap_or(false);
@@ -731,6 +732,7 @@ impl OrgsService {
                     provider,
                     credentials: Vec::new(),
                 },
+                mirrors: Vec::new(),
                 repos: Vec::new(),
             });
             cfg.forge.provider = provider;

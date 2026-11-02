@@ -286,6 +286,11 @@ pub struct ForgeBlock {
 pub struct OrgConfig {
     pub name: OrgName,
     pub forge: ForgeBlock,
+    /// HYPERFORGE-60: further forges the org's repos live on, each with its
+    /// own credentials. A repo's registered remotes on these providers are
+    /// mirror targets ().
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<ForgeBlock>,
     #[serde(default)]
     pub repos: Vec<OrgRepo>,
 }

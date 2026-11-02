@@ -11,6 +11,7 @@
 pub mod state;
 pub mod images;
 pub mod pr;
+pub mod mirror;
 pub mod release_assets;
 pub mod repo;
 pub mod fs;
