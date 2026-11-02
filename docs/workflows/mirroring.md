@@ -25,4 +25,4 @@ mirrors:
     type: token
 ```
 
-The plan (`hf repos mirror --name REPO`) shows which reference each forge will use before anything is pushed. Tokens reach git through its askpass hook and the environment, never on a command line.
+The plan (`hf repos mirror --name REPO`) shows which reference each forge will use before anything is pushed. Tokens reach git through an inline credential helper that reads the environment, never a command line or a file.

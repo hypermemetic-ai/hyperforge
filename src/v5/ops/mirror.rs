@@ -2,12 +2,13 @@
 //! repo is registered on. Targets are the registry's remotes (the org
 //! yaml), not `.git/config`, so a mirror needs no extra git remote. Pushes
 //! are never forced; a token, when the forge has one in the secret store,
-//! reaches `git` through `GIT_ASKPASS` and the environment, never through
+//! reaches `git` through an inline credential helper reading the environment,
+//! never through
 //! arguments, URLs or logs.
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+
+use std::path::Path;
 use std::process::Command;
 
 use crate::v5::config::{CredentialType, DomainName, OrgConfig, OrgRepo, ProviderKind};
@@ -152,38 +153,20 @@ fn http_user(provider: ProviderKind, url: &str) -> String {
     }
 }
 
-const ASKPASS: &str = "#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s\\n' \"$HF_MIRROR_USER\" ;;\n  *) printf '%s\\n' \"$HF_MIRROR_TOKEN\" ;;\nesac\n";
-
-/// A one-use askpass helper. It holds no secret: it echoes the
-/// environment it is run with.
-struct Askpass {
-    _dir: tempfile::TempDir,
-    path: PathBuf,
-}
-
-fn askpass() -> Result<Askpass, String> {
-    let dir = tempfile::Builder::new().prefix("hf-mirror-").tempdir().map_err(|e| e.to_string())?;
-    let path = dir.path().join("askpass.sh");
-    let mut f = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-    f.write_all(ASKPASS.as_bytes()).map_err(|e| e.to_string())?;
-    drop(f);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-    }
-    Ok(Askpass { _dir: dir, path })
-}
+/// An inline credential helper: it answers `get` from the environment it
+/// runs in, so no file and no argument ever holds the token.
+const HELPER: &str = "!f() { test \"$1\" = get || exit 0; echo \"username=$HF_MIRROR_USER\"; echo \"password=$HF_MIRROR_TOKEN\"; }; f";
 
 /// The `git` command for one push or listing. Pure, so tests can check that
 /// the token is in the environment only.
-fn git_command(dir: &Path, provider: ProviderKind, url: &str, cred: Option<&Credential>, askpass: Option<&Path>, tail: &[&str]) -> Command {
+fn git_command(dir: &Path, provider: ProviderKind, url: &str, cred: Option<&Credential>, tail: &[&str]) -> Command {
     let mut envs: Vec<(String, std::ffi::OsString)> = vec![("GIT_TERMINAL_PROMPT".into(), "0".into())];
+    let helper = format!("credential.helper={HELPER}");
     let mut config: Vec<&str> = Vec::new();
-    if let (Some(c), Some(a), true) = (cred, askpass, is_http(url)) {
-        // Only this token: no stored helper answers instead.
+    if let (Some(c), true) = (cred, is_http(url)) {
+        // Only this token: the reset drops any stored helper first.
         config.push("credential.helper=");
-        envs.push(("GIT_ASKPASS".into(), a.as_os_str().to_owned()));
+        config.push(&helper);
         envs.push(("HF_MIRROR_USER".into(), http_user(provider, url).into()));
         envs.push(("HF_MIRROR_TOKEN".into(), c.token.clone().into()));
     }
@@ -221,13 +204,9 @@ fn parse_porcelain(out: &str) -> Pushed {
 /// Push `specs` to `url`. `Ok` carries the per-ref outcome even when some
 /// refs were rejected; `Err` means git could not push at all.
 pub fn push(dir: &Path, target: &Target, specs: &[String], cred: Option<&Credential>) -> Result<Pushed, String> {
-    let helper = match cred {
-        Some(_) if is_http(&target.url) => Some(askpass()?),
-        _ => None,
-    };
     let mut tail: Vec<&str> = vec!["push", "--porcelain", &target.url];
     tail.extend(specs.iter().map(String::as_str));
-    let out = git_command(dir, target.provider, &target.url, cred, helper.as_ref().map(|h| h.path.as_path()), &tail)
+    let out = git_command(dir, target.provider, &target.url, cred, &tail)
         .output()
         .map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -255,11 +234,7 @@ fn local_refs(dir: &Path, pattern: &str) -> BTreeMap<String, String> {
 /// Compare the checkout's branches (named, or all) and tags with what the
 /// forge advertises. Reads only (`git ls-remote`).
 pub fn compare(dir: &Path, target: &Target, branches: &[String], all_branches: bool, cred: Option<&Credential>) -> Result<Compared, String> {
-    let helper = match cred {
-        Some(_) if is_http(&target.url) => Some(askpass()?),
-        _ => None,
-    };
-    let out = git_command(dir, target.provider, &target.url, cred, helper.as_ref().map(|h| h.path.as_path()), &["ls-remote", "--heads", "--tags", &target.url])
+    let out = git_command(dir, target.provider, &target.url, cred, &["ls-remote", "--heads", "--tags", &target.url])
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -341,10 +316,11 @@ mod tests {
     fn the_token_travels_in_the_environment_only() {
         let cred = Credential { reference: "secrets://github/acme/token".into(), token: "tok-SECRET".into() };
         let target = Target { url: "https://github.com/acme/widget.git".into(), provider: ProviderKind::Github };
-        let cmd = git_command(Path::new("/x"), target.provider, &target.url, Some(&cred), Some(Path::new("/a/askpass.sh")), &["push", "--porcelain", &target.url, "refs/tags/*:refs/tags/*"]);
+        let cmd = git_command(Path::new("/x"), target.provider, &target.url, Some(&cred), &["push", "--porcelain", &target.url, "refs/tags/*:refs/tags/*"]);
         let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(args.iter().all(|a| !a.contains("tok-SECRET")), "{args:?}");
         assert!(args.contains(&"credential.helper=".to_string()));
+        assert!(args.iter().any(|a| a == &format!("credential.helper={HELPER}")), "{args:?}");
         let envs: BTreeMap<String, String> = cmd
             .get_envs()
             .filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned())))
@@ -353,21 +329,37 @@ mod tests {
         assert_eq!(envs.get("HF_MIRROR_USER").map(String::as_str), Some("x-access-token"));
         assert_eq!(format!("{cred:?}").contains("tok-SECRET"), false);
         // SSH and local remotes never get the token.
-        let ssh = git_command(Path::new("/x"), ProviderKind::Codeberg, "git@codeberg.org:acme/w.git", Some(&cred), Some(Path::new("/a")), &["push"]);
+        let ssh = git_command(Path::new("/x"), ProviderKind::Codeberg, "git@codeberg.org:acme/w.git", Some(&cred), &["push"]);
         assert!(ssh.get_envs().all(|(k, _)| k != "HF_MIRROR_TOKEN"));
     }
 
     #[test]
-    fn the_askpass_helper_answers_from_its_environment() {
-        let a = askpass().unwrap();
-        let run = |prompt: &str| {
-            let o = Command::new(&a.path).arg(prompt).env("HF_MIRROR_USER", "u").env("HF_MIRROR_TOKEN", "t").output().unwrap();
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
+    fn the_helper_answers_get_from_its_environment_only() {
+        let body = HELPER.trim_start_matches('!');
+        let run = |action: &str| {
+            let o = Command::new("sh")
+                .args(["-c", &format!("{body} {action}")])
+                .env("HF_MIRROR_USER", "u")
+                .env("HF_MIRROR_TOKEN", "t")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).to_string()
         };
-        assert_eq!(run("Username for 'https://codeberg.org': "), "u");
-        assert_eq!(run("Password for 'https://u@codeberg.org': "), "t");
-        // The helper on disk is the fixed script: no secret is ever written.
-        assert_eq!(std::fs::read_to_string(&a.path).unwrap(), ASKPASS);
+        assert_eq!(run("get"), "username=u\npassword=t\n");
+        assert_eq!(run("store"), "");
+        assert!(!HELPER.contains("tok"));
+    }
+
+    #[test]
+    fn git_itself_gets_the_token_from_the_helper() {
+        use std::io::Write as _;
+        let d = tempfile::tempdir().unwrap();
+        let cred = Credential { reference: "r".into(), token: "tok-T".into() };
+        let mut cmd = git_command(d.path(), ProviderKind::Github, "https://github.com/a/b.git", Some(&cred), &["credential", "fill"]);
+        let mut child = cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(b"protocol=https\nhost=github.com\npath=a/b.git\n\n").unwrap();
+        let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+        assert!(out.contains("username=x-access-token") && out.contains("password=tok-T"), "{out}");
     }
 
     #[test]
