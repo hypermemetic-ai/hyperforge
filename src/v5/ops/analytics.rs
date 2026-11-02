@@ -165,7 +165,9 @@ mod tests {
     use super::*;
 
     fn mktmp() -> PathBuf {
-        let base = std::env::temp_dir().join(format!("v5-analytics-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("v5-analytics-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         base

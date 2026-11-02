@@ -168,6 +168,16 @@ impl HyperforgeService {
 }
 
 /// Hyperforge v5 root — minimal scaffold.
+/// `begin`'s walk, each hint a command as it runs; V5DAILY-2 holds every flag
+/// here to the method's own `--help`.
+const BEGIN_STEPS: &[(&str, &str)] = &[
+    ("orgs.create", "Register an org: `orgs create --name <org> --provider github`"),
+    ("secrets.set", "Add a token: `secrets set --key secrets://github/<org>/token --value <gh-token>`"),
+    ("orgs.set_credential", "Wire it: `orgs set_credential --org <org> --key secrets://github/<org>/token --credential-type token`"),
+    ("repos.import", "Pull in your repos: `repos import --org <org> --forge github`"),
+    ("workspaces.discover", "Name your checkouts: `workspaces discover --path <dir> --name <workspace>`"),
+];
+
 #[plexus_macros::activation(
     trait = "HyperforgeApi",
     methods = marked,
@@ -616,22 +626,12 @@ impl HyperforgeService {
                     return;
                 }
             }
-            yield HyperforgeV5Event::BeginNextStep {
-                action: "orgs.create".into(),
-                message: "Register an org: `orgs create --name <org> --provider github`".into(),
-            };
-            yield HyperforgeV5Event::BeginNextStep {
-                action: "secrets.set".into(),
-                message: "Add a token: `secrets set --key secrets://github/<org>/token --value <gh-token>`".into(),
-            };
-            yield HyperforgeV5Event::BeginNextStep {
-                action: "orgs.set_credential".into(),
-                message: "Wire it: `orgs set_credential --name <org> --key secrets://github/<org>/token --type token`".into(),
-            };
-            yield HyperforgeV5Event::BeginNextStep {
-                action: "repos.import".into(),
-                message: "Pull in your repos: `repos import --org <org> --forge github`".into(),
-            };
+            for (action, message) in BEGIN_STEPS {
+                yield HyperforgeV5Event::BeginNextStep {
+                    action: (*action).into(),
+                    message: (*message).into(),
+                };
+            }
         }
     }
 

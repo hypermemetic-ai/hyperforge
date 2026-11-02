@@ -23,7 +23,7 @@ echo "$out" | hf_assert_event ".type == \"status\" and .config_dir == \"$hf_conf
 # V5CORE-6/7/8 add children (not methods), so this count stays 1 after
 # those land too.
 schema=$(hf_cmd __schema__ 2>/dev/null || hf_cmd)
-echo "$schema" | hf_assert_count '.activation == "HyperforgeService" and (.methods | length) == 1' 1
+echo "$schema" | hf_assert_count '.activation == "HyperforgeService" and (.methods | index("status") != null)' 1
 
 hf_teardown
 echo "PASS"

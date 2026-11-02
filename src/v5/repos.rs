@@ -39,6 +39,18 @@ use crate::v5::secrets::{SecretResolver, YamlSecretStore};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RepoEvent {
+    /// `pr`: the pull request, or with `dry_run` what would be opened.
+    PullRequest {
+        repo: String,
+        head: String,
+        base: String,
+        title: String,
+        dry_run: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        number: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
     /// Emitted by `forge_port_schema` (and harness capability probe).
     /// Names the exact four-field D3 intersection + the three
     /// lifecycle methods pinned by V5PROV-2 (D10).
@@ -2017,6 +2029,46 @@ impl ReposService {
                     code: Some(e.code().into()),
                     error_class: None,
                     message: e.to_string(),
+                },
+            }
+        }
+    }
+
+    #[plexus_macros::method(params(
+        path = "Repo checkout directory, on the branch to propose",
+        title = "Pull request title",
+        body = "Pull request body",
+        base = "Branch to merge into (default the repo's default branch)",
+        draft = "Open as a draft (default false)",
+        dry_run = "Check everything; open nothing (default false)"
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn pr(
+        &self,
+        path: String,
+        title: String,
+        body: Option<String>,
+        base: Option<String>,
+        draft: Option<bool>,
+        dry_run: Option<bool>,
+    ) -> impl Stream<Item = RepoEvent> + Send + 'static {
+        let config_dir = self.config_dir.clone();
+        stream! {
+            let args = crate::v5::ops::pr::Args {
+                dir: std::path::PathBuf::from(path),
+                title,
+                body: body.unwrap_or_default(),
+                base,
+                draft: draft.unwrap_or(false),
+                dry_run: dry_run.unwrap_or(false),
+            };
+            match crate::v5::ops::pr::open(&config_dir, args).await {
+                Ok(p) => yield RepoEvent::PullRequest {
+                    repo: p.repo, head: p.head, base: p.base, title: p.title,
+                    dry_run: p.dry_run, number: p.number, url: p.url,
+                },
+                Err((code, message)) => yield RepoEvent::Error {
+                    code: Some(code.into()), error_class: None, message,
                 },
             }
         }

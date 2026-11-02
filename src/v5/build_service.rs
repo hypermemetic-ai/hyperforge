@@ -28,6 +28,10 @@ pub enum BuildEvent {
         finding: manifest::Finding,
     },
     ValidateOk { name: String, total: u32 },
+    /// `link`: this checkout's cargo now uses these crates' sibling checkouts.
+    Linked { path: String, crates: Vec<String> },
+    /// `unlink`: the checkout is back on published crates.
+    Unlinked { path: String },
     ValidateFailed { name: String, total: u32, failed: u32 },
     NameMismatch {
         #[serde(rename = "ref")]
@@ -518,6 +522,36 @@ impl BuildService {
     }
 
     // ==================================================================
+    // Local cross-repo work, with no path dependency committed.
+    // ==================================================================
+
+    #[plexus_macros::method(params(
+        name = "Workspace name",
+        path = "Checkout that uses the local crates",
+        include = "Crates to use from their sibling checkouts (globs on crate names)",
+        exclude = "Crates to leave out (globs)"
+    ))]
+    pub async fn link(
+        &self,
+        name: String,
+        path: String,
+        include: Vec<String>,
+        exclude: Option<Vec<String>>,
+    ) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        use futures::StreamExt as _;
+        let repos = match chain_repos(&self.config_dir, &name) {
+            Ok(r) => r,
+            Err(e) => return futures::stream::once(async move { err("not_found", e) }).boxed(),
+        };
+        from_task(move |tx| crate::v5::build::chain_ops::link(tx, repos, PathBuf::from(path), include, exclude.unwrap_or_default())).boxed()
+    }
+
+    #[plexus_macros::method(params(path = "Checkout to return to published crates"))]
+    pub async fn unlink(&self, path: String) -> impl Stream<Item = BuildEvent> + Send + 'static {
+        from_task(move |tx| crate::v5::build::chain_ops::unlink(tx, PathBuf::from(path)))
+    }
+
+    // ==================================================================
     // V5PARITY-10: release.
     // ==================================================================
 
@@ -530,7 +564,7 @@ impl BuildService {
         exclude = "Crates to leave out (globs)",
         closure = "Also bump every chain crate the included ones need (default false)",
         dry_run = "Say what would change; write nothing (default false)",
-        commit = "Commit each repo's change (default true)"
+        commit = "Commit each repo's change, and tag a one-repo bump (default true)"
     ))]
     #[allow(clippy::too_many_arguments)]
     pub async fn bump(
@@ -589,13 +623,41 @@ impl BuildService {
                 Ok(t) => t,
                 Err(e) => { yield err(e.code(), e.to_string()); return; }
             };
+            if dry_run.unwrap_or(false) {
+                yield BuildEvent::ChainNote {
+                    message: format!("dry run: {name} {old} → {new}; nothing written"),
+                };
+                return;
+            }
+            match crate::v5::build::chain_ops::dirty(&dir, &cargo) {
+                Ok(d) if d.is_empty() => {}
+                Ok(_) => { yield err("dirty", format!("{} has uncommitted changes; nothing written", cargo.display())); return; }
+                Err(e) => { yield err("git", e); return; }
+            }
             if let Err(e) = std::fs::write(&cargo, new_text) {
                 yield err("io", e.to_string()); return;
             }
-            // Commit + tag via ops::git (D13).
-            let _ = crate::v5::ops::git::add(&dir, &["Cargo.toml"]);
-            let _ = crate::v5::ops::git::commit(&dir, &format!("chore: bump version to {new}"));
-            let _ = crate::v5::ops::git::tag(&dir, &format!("v{new}"));
+            let lock_changed = match crate::v5::build::chain_ops::refresh_lock(&dir).await {
+                Ok(c) => c,
+                Err(e) => {
+                    yield BuildEvent::ChainNote { message: format!("{name}: Cargo.lock not refreshed: {e}") };
+                    false
+                }
+            };
+            // Commit + tag via ops::git (D13); commit=false stops at the files.
+            if commit.unwrap_or(true) {
+                let mut files = vec!["Cargo.toml"];
+                if lock_changed { files.push("Cargo.lock"); }
+                if let Err(e) = crate::v5::ops::git::add(&dir, &files) {
+                    yield err("git", format!("manifest written, not staged: {e}")); return;
+                }
+                if let Err(e) = crate::v5::ops::git::commit(&dir, &format!("chore: bump version to {new}")) {
+                    yield err("git", format!("manifest written, not committed: {e}")); return;
+                }
+                if let Err(e) = crate::v5::ops::git::tag(&dir, &format!("v{new}")) {
+                    yield err("git", format!("committed, not tagged: {e}")); return;
+                }
+            }
             yield BuildEvent::VersionBumped {
                 reference: crate::v5::repos::RepoRefWire { org, name },
                 old, new,

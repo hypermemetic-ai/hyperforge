@@ -885,7 +885,7 @@ fn git_ignored(dir: &Path, paths: &[String]) -> BTreeSet<String> {
     if paths.is_empty() {
         return BTreeSet::new();
     }
-    let Ok(mut child) = std::process::Command::new("git")
+    let Ok(mut child) = crate::v5::ops::git::git_command()
         .arg("-C")
         .arg(dir)
         .args(["check-ignore", "--stdin"])

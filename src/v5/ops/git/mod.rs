@@ -114,6 +114,64 @@ pub fn clone_repo_with_env(
     subprocess::clone_repo_with_env(url, dest, env)
 }
 
+/// Run git in `dir`, its stdout or a message naming the failure. The door
+/// for build flows whose commands have no typed op here.
+pub fn run_in(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
+/// Create a process for `git`, for callers that stream its stdin.
+#[must_use]
+pub fn git_command() -> std::process::Command {
+    std::process::Command::new("git")
+}
+
+/// Does `refs/heads/<branch>` exist here?
+#[must_use]
+pub fn branch_exists(dir: &Path, branch: &str) -> bool {
+    run_in(dir, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok()
+}
+
+/// Add a worktree at `dest` on `branch`: created from `base` (default HEAD),
+/// or the existing branch as it stands, which refuses a `base`.
+pub fn worktree_add(dir: &Path, dest: &Path, branch: &str, base: Option<&str>) -> Result<(), String> {
+    let dest_s = dest.to_str().ok_or("worktree path is not UTF-8")?;
+    if branch_exists(dir, branch) {
+        if base.is_some() {
+            return Err(format!("branch {branch} exists; it keeps its own base"));
+        }
+        run_in(dir, &["worktree", "add", "-q", dest_s, branch]).map(|_| ())
+    } else {
+        let mut args = vec!["worktree", "add", "-q", "-b", branch, dest_s];
+        args.extend(base);
+        run_in(dir, &args).map(|_| ())
+    }
+}
+
+/// Remove a clean worktree. Git refuses one with uncommitted work.
+pub fn worktree_remove(dir: &Path, dest: &Path) -> Result<(), String> {
+    run_in(dir, &["worktree", "remove", dest.to_str().ok_or("worktree path is not UTF-8")?]).map(|_| ())
+}
+
+/// Every checkout of this repo: the main one first, then its worktrees.
+pub fn worktree_list(dir: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    Ok(run_in(dir, &["worktree", "list", "--porcelain"])?
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(std::path::PathBuf::from)
+        .collect())
+}
+
 pub fn fetch(dir: &Path, remote: Option<&str>) -> Result<(), GitError> {
     subprocess::fetch(dir, remote)
 }

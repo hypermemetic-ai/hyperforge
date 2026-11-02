@@ -14,6 +14,16 @@ pub use crate::v5::config::{
 
 use crate::v5::config::{OrgConfig, OrgRepo};
 
+/// Parse YAML. Every yaml read outside the loaders comes through here (D13).
+pub fn yaml_parse<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    serde_yaml::from_str(text).map_err(|e| e.to_string())
+}
+
+/// Render YAML. Every yaml write outside the loaders comes through here (D13).
+pub fn yaml_text<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    serde_yaml::to_string(value).map_err(|e| e.to_string())
+}
+
 /// Find a repo by name within an org.
 #[must_use]
 pub fn find_repo<'a>(org: &'a OrgConfig, name: &str) -> Option<&'a OrgRepo> {

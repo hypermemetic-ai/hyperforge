@@ -407,3 +407,165 @@ fn v5lifecycle_9() { run_one("v5lifecycle_9").unwrap(); }
 fn v5lifecycle_10() { run_one("v5lifecycle_10").unwrap(); }
 #[test]
 fn v5lifecycle_11() { run_one("v5lifecycle_11").unwrap(); }
+
+// Scripts wired in so the suite cannot rot beside them.
+#[test]
+fn v5daily_1() {
+    run_one("v5daily_1").unwrap();
+}
+#[test]
+fn v5daily_2() {
+    run_one("v5daily_2").unwrap();
+}
+#[test]
+fn v5daily_3() {
+    run_one("v5daily_3").unwrap();
+}
+#[test]
+fn v5daily_4() {
+    run_one("v5daily_4").unwrap();
+}
+#[test]
+fn v5daily_5() {
+    run_one("v5daily_5").unwrap();
+}
+#[test]
+fn v5parity_10() {
+    run_one("v5parity_10").unwrap();
+}
+#[test]
+fn v5parity_11() {
+    run_one("v5parity_11").unwrap();
+}
+#[test]
+fn v5parity_12() {
+    run_one("v5parity_12").unwrap();
+}
+#[test]
+fn v5parity_13() {
+    run_one("v5parity_13").unwrap();
+}
+#[test]
+fn v5parity_14() {
+    run_one("v5parity_14").unwrap();
+}
+#[test]
+fn v5parity_15() {
+    run_one("v5parity_15").unwrap();
+}
+#[test]
+fn v5parity_16() {
+    run_one("v5parity_16").unwrap();
+}
+#[test]
+fn v5parity_17() {
+    run_one("v5parity_17").unwrap();
+}
+#[test]
+fn v5parity_18() {
+    run_one("v5parity_18").unwrap();
+}
+#[test]
+fn v5parity_19() {
+    run_one("v5parity_19").unwrap();
+}
+#[test]
+fn v5parity_2() {
+    run_one("v5parity_2").unwrap();
+}
+#[test]
+fn v5parity_20() {
+    run_one("v5parity_20").unwrap();
+}
+#[test]
+fn v5parity_21() {
+    run_one("v5parity_21").unwrap();
+}
+#[test]
+fn v5parity_22() {
+    run_one("v5parity_22").unwrap();
+}
+#[test]
+fn v5parity_23() {
+    run_one("v5parity_23").unwrap();
+}
+#[test]
+fn v5parity_24() {
+    run_one("v5parity_24").unwrap();
+}
+#[test]
+fn v5parity_25() {
+    run_one("v5parity_25").unwrap();
+}
+#[test]
+fn v5parity_26() {
+    run_one("v5parity_26").unwrap();
+}
+#[test]
+fn v5parity_27() {
+    run_one("v5parity_27").unwrap();
+}
+#[test]
+fn v5parity_28() {
+    run_one("v5parity_28").unwrap();
+}
+#[test]
+fn v5parity_29() {
+    run_one("v5parity_29").unwrap();
+}
+#[test]
+fn v5parity_3() {
+    run_one("v5parity_3").unwrap();
+}
+#[test]
+fn v5parity_30() {
+    run_one("v5parity_30").unwrap();
+}
+#[test]
+fn v5parity_31() {
+    run_one("v5parity_31").unwrap();
+}
+#[test]
+fn v5parity_32() {
+    run_one("v5parity_32").unwrap();
+}
+#[test]
+fn v5parity_33() {
+    run_one("v5parity_33").unwrap();
+}
+#[test]
+fn v5parity_34() {
+    run_one("v5parity_34").unwrap();
+}
+#[test]
+fn v5parity_35() {
+    run_one("v5parity_35").unwrap();
+}
+#[test]
+fn v5parity_36() {
+    run_one("v5parity_36").unwrap();
+}
+#[test]
+fn v5parity_4() {
+    run_one("v5parity_4").unwrap();
+}
+#[test]
+fn v5parity_5() {
+    run_one("v5parity_5").unwrap();
+}
+#[test]
+fn v5parity_6() {
+    run_one("v5parity_6").unwrap();
+}
+#[test]
+fn v5parity_7() {
+    run_one("v5parity_7").unwrap();
+}
+#[test]
+fn v5parity_8() {
+    run_one("v5parity_8").unwrap();
+}
+#[test]
+fn v5parity_9() {
+    run_one("v5parity_9").unwrap();
+}

@@ -28,7 +28,7 @@ fn registry_path(config_dir: &Path) -> PathBuf {
 pub fn repos(config_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let path = registry_path(config_dir);
     match std::fs::read_to_string(&path) {
-        Ok(text) => serde_yaml::from_str::<RegistryFile>(&text)
+        Ok(text) => crate::v5::ops::state::yaml_parse::<RegistryFile>(&text)
             .map(|f| f.repos)
             .map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -38,7 +38,7 @@ pub fn repos(config_dir: &Path) -> Result<Vec<PathBuf>, String> {
 
 fn save(config_dir: &Path, repos: Vec<PathBuf>) -> Result<(), String> {
     let path = registry_path(config_dir);
-    let text = serde_yaml::to_string(&RegistryFile { repos }).map_err(|e| e.to_string())?;
+    let text = crate::v5::ops::state::yaml_text(&RegistryFile { repos })?;
     std::fs::create_dir_all(config_dir).map_err(|e| format!("{}: {e}", config_dir.display()))?;
     let tmp = path.with_extension("yaml.tmp");
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;

@@ -5,7 +5,6 @@
 //! the checkout with nothing written; [`commit_and_tag`] does it.
 
 use std::path::Path;
-use std::process::Command;
 
 use thiserror::Error;
 
@@ -146,8 +145,7 @@ pub struct Plan {
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    crate::v5::ops::git::run_in(dir, args).ok().map(|s| s.trim().to_string())
 }
 
 /// Work out a release, refusing a checkout that would release more than the

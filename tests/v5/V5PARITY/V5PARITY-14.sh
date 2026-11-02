@@ -96,9 +96,17 @@ echo "$out" | hf_assert_event '.type == "member_git_result" and .op == "checkout
 echo "$out" | hf_assert_event '.type == "workspace_git_summary" and .op == "checkout" and .ok == 2'
 [[ "$(git -C "$ALPHA" branch --show-current)" == "feat-x" ]]
 [[ "$(git -C "$BETA" branch --show-current)" == "feat-x" ]]
-# Re-running is a successful no-op (-B reset to same commit).
+# An existing branch is refused and left where it is, never reset.
+before="$(git -C "$ALPHA" rev-parse feat-x)"
+git -C "$ALPHA" commit -q --allow-empty -m "ahead of the base"
+ahead="$(git -C "$ALPHA" rev-parse feat-x)"
+git -C "$ALPHA" checkout -q HEAD~1
 out=$(hf_cmd workspaces checkout --name main --branch feat-x --create true)
-echo "$out" | hf_assert_event '.type == "workspace_git_summary" and .op == "checkout" and .errored == 0'
+echo "$out" | hf_assert_event '.type == "workspace_git_summary" and .op == "checkout" and .errored == 2'
+[[ "$(git -C "$ALPHA" rev-parse feat-x)" == "$ahead" ]]
+[[ "$(git -C "$ALPHA" rev-parse HEAD)" == "$before" ]]
+git -C "$ALPHA" checkout -q feat-x
+git -C "$ALPHA" reset -q --hard "$before"
 
 # --- (6) workspaces.commit with --only_dirty (default) ---
 # Stage a change in alpha only.

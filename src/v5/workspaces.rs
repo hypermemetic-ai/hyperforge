@@ -38,6 +38,10 @@ impl WorkspacesService {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkspacesEvent {
+    /// One checkout, main or worktree (`orient`).
+    OrientCheckout { row: OrientRow },
+    /// `orient --table`: aligned text, one line per checkout.
+    OrientTable { text: String },
     /// One summary per workspace (V5WS-2 `list`).
     WorkspaceSummary {
         name: String,
@@ -1901,7 +1905,7 @@ impl WorkspacesService {
     #[plexus_macros::method(params(
         name = "Workspace name",
         branch = "Branch name",
-        create = "If true, create the branch if absent (uses checkout -B)"
+        create = "If true, create the branch; a branch that exists is refused, never reset"
     ))]
     pub async fn checkout(
         &self,
@@ -1935,6 +1939,145 @@ impl WorkspacesService {
                 name: ws.name.as_str().to_string(), op: "checkout".into(),
                 total, ok, errored,
             };
+        }
+    }
+
+    #[plexus_macros::method(params(
+        name = "Workspace name",
+        ticket = "Ticket id: the branch name and the worktrees' folder, `wt-<ticket>`",
+        repos = "Member repo names to include",
+        base = "Git ref a new branch starts from (default each repo's HEAD)",
+        remove = "Remove these worktrees instead; the branches stay (default false)",
+        dry_run = "Say what would happen; write nothing (default false)"
+    ))]
+    pub async fn worktree(
+        &self,
+        name: String,
+        ticket: String,
+        repos: Vec<String>,
+        base: Option<String>,
+        remove: Option<bool>,
+        dry_run: Option<bool>,
+    ) -> impl futures::Stream<Item = WorkspacesEvent> + Send + 'static {
+        let config_dir = self.config_dir.clone();
+        async_stream::stream! {
+            if !valid_ticket(&ticket) {
+                yield WorkspacesEvent::Error {
+                    code: Some("validation".into()),
+                    message: format!("'{ticket}' is not a ticket id: letters, digits, `-`, `_`, `.`, not starting with `-` or `.`"),
+                };
+                return;
+            }
+            let (ws, loaded) = match load_iter_ctx(&config_dir, &name).await {
+                Ok(t) => t, Err(e) => { yield e; return; }
+            };
+            let ws_path = std::path::PathBuf::from(ws.path.as_str());
+            let members: Vec<_> = member_ctxs(&ws, &loaded, &ws_path).collect();
+            let missing: Vec<&String> = repos.iter().filter(|r| !members.iter().any(|m| &m.reference.name == *r)).collect();
+            if repos.is_empty() || !missing.is_empty() {
+                yield WorkspacesEvent::Error {
+                    code: Some("validation".into()),
+                    message: if repos.is_empty() { "name at least one repo".into() } else { format!("not members of {name}: {missing:?}") },
+                };
+                return;
+            }
+            let root = ws_path.join(format!("wt-{ticket}"));
+            let (dry, removing) = (dry_run.unwrap_or(false), remove.unwrap_or(false));
+            let op = if removing { "worktree_remove" } else { "worktree" };
+            let (mut ok, mut errored) = (0u32, 0u32);
+            for ctx in members.iter().filter(|m| repos.contains(&m.reference.name)) {
+                let dest = root.join(&ctx.reference.name);
+                let done = if dry {
+                    Ok(())
+                } else if removing {
+                    crate::v5::ops::git::worktree_remove(&ctx.dir, &dest)
+                } else if dest.exists() {
+                    Err(format!("{} exists", dest.display()))
+                } else {
+                    crate::v5::ops::git::worktree_add(&ctx.dir, &dest, &ticket, base.as_deref())
+                };
+                let (status, message) = match done {
+                    Ok(()) => { ok += 1; (if dry { "would" } else { "ok" }, dest.display().to_string()) }
+                    Err(e) => { errored += 1; ("errored", e) }
+                };
+                yield WorkspacesEvent::MemberGitResult {
+                    reference: ctx.reference.clone(),
+                    op: op.into(),
+                    status: status.into(),
+                    message: Some(message),
+                };
+            }
+            if removing && !dry {
+                // Only an empty folder goes; anything left in it stays.
+                let _ = std::fs::remove_dir(&root);
+            }
+            yield WorkspacesEvent::WorkspaceGitSummary {
+                name: ws.name.as_str().to_string(), op: op.into(),
+                total: u32::try_from(repos.len()).unwrap_or(u32::MAX), ok, errored,
+            };
+        }
+    }
+
+    #[plexus_macros::method(params(
+        name = "Workspace name",
+        dirty_only = "Only checkouts with uncommitted changes or commits unpushed or unpulled, or with no upstream (default false)",
+        table = "One aligned text table in place of a row per checkout (default false)"
+    ))]
+    pub async fn orient(
+        &self,
+        name: String,
+        dirty_only: Option<bool>,
+        table: Option<bool>,
+    ) -> impl futures::Stream<Item = WorkspacesEvent> + Send + 'static {
+        let config_dir = self.config_dir.clone();
+        async_stream::stream! {
+            let (ws, loaded) = match load_iter_ctx(&config_dir, &name).await {
+                Ok(t) => t, Err(e) => { yield e; return; }
+            };
+            let ws_path = std::path::PathBuf::from(ws.path.as_str());
+            let only = dirty_only.unwrap_or(false);
+            let mut rows: Vec<OrientRow> = Vec::new();
+            for ctx in member_ctxs(&ws, &loaded, &ws_path) {
+                if !ctx.dir.exists() {
+                    continue;
+                }
+                let checkouts = crate::v5::ops::git::worktree_list(&ctx.dir).unwrap_or_else(|_| vec![ctx.dir.clone()]);
+                for (i, path) in checkouts.into_iter().enumerate() {
+                    if !path.exists() {
+                        continue;
+                    }
+                    let row = match crate::v5::ops::git::status(&path) {
+                        Ok(s) => OrientRow {
+                            repo: ctx.reference.name.clone(),
+                            path: path.display().to_string(),
+                            worktree: i > 0,
+                            dirty: s.staged + s.unstaged + s.untracked,
+                            branch: s.branch,
+                            upstream: s.upstream,
+                            ahead: s.ahead,
+                            behind: s.behind,
+                            error: None,
+                        },
+                        Err(e) => OrientRow {
+                            repo: ctx.reference.name.clone(),
+                            path: path.display().to_string(),
+                            worktree: i > 0,
+                            branch: None, upstream: None, ahead: 0, behind: 0, dirty: 0,
+                            error: Some(e.to_string()),
+                        },
+                    };
+                    if !only || row.needs_attention() {
+                        rows.push(row);
+                    }
+                }
+            }
+            if table.unwrap_or(false) {
+                yield WorkspacesEvent::OrientTable { text: orient_table(&rows) };
+            } else {
+                for row in rows {
+                    yield WorkspacesEvent::OrientCheckout { row };
+                }
+            }
         }
     }
 
@@ -2670,6 +2813,56 @@ fn member_ctxs<'a>(
             dir,
         })
     })
+}
+
+/// A ticket id is safe as a branch and a folder name.
+fn valid_ticket(t: &str) -> bool {
+    !t.is_empty()
+        && !t.starts_with(['-', '.'])
+        && !t.contains("..")
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// One checkout of a member repo: its main checkout or a worktree.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OrientRow {
+    pub repo: String,
+    pub path: String,
+    pub worktree: bool,
+    pub branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    /// Files staged, changed or untracked.
+    pub dirty: u32,
+    pub error: Option<String>,
+}
+
+impl OrientRow {
+    fn needs_attention(&self) -> bool {
+        self.dirty > 0 || self.ahead > 0 || self.behind > 0 || self.upstream.is_none() || self.error.is_some()
+    }
+}
+
+fn orient_table(rows: &[OrientRow]) -> String {
+    let cells: Vec<[String; 5]> = rows.iter().map(|r| [
+        if r.worktree { format!("{} (wt)", r.repo) } else { r.repo.clone() },
+        r.branch.clone().unwrap_or_else(|| "(detached)".into()),
+        r.upstream.as_ref().map_or_else(|| "no upstream".into(), |_| format!("+{} -{}", r.ahead, r.behind)),
+        if r.dirty > 0 { format!("{} dirty", r.dirty) } else { "clean".into() },
+        r.error.clone().unwrap_or_else(|| r.path.clone()),
+    ]).collect();
+    let header = ["REPO", "BRANCH", "UPSTREAM", "TREE", "PATH"].map(String::from);
+    let width = |c: usize| cells.iter().chain([&header]).map(|r| r[c].chars().count()).max().unwrap_or(0);
+    let widths = [width(0), width(1), width(2), width(3)];
+    let line = |r: &[String; 5]| format!(
+        "{:w0$}  {:w1$}  {:w2$}  {:w3$}  {}\n", r[0], r[1], r[2], r[3], r[4],
+        w0 = widths[0], w1 = widths[1], w2 = widths[2], w3 = widths[3]);
+    let mut out = line(&header);
+    for r in &cells {
+        out.push_str(&line(r));
+    }
+    out
 }
 
 fn member_ok(reference: &crate::v5::repos::RepoRefWire, op: &str) -> WorkspacesEvent {

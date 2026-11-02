@@ -201,10 +201,9 @@ pub(super) fn checkout(dir: &Path, branch: &str, create: bool) -> Result<(), Git
     };
 
     if create {
-        // -B semantics: reset/create. Find or create the branch ref at HEAD.
+        // `checkout -b`: a branch that exists is refused, never moved.
         if let Some(commit) = &head_commit {
-            // `force = true` matches `git checkout -B`.
-            repo.branch(branch, commit, true).map_err(map_err("checkout"))?;
+            repo.branch(branch, commit, false).map_err(map_err("checkout"))?;
         } else {
             return Err(GitError::Local {
                 code: "checkout",

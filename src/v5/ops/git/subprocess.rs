@@ -144,7 +144,7 @@ pub(super) fn checkout(dir: &Path, branch: &str, create: bool) -> Result<(), Git
     ensure_git_repo(dir)?;
     let dir_s = dir.to_str().unwrap_or("");
     if create {
-        return run_git(None, &["-C", dir_s, "checkout", "-B", branch]);
+        return run_git(None, &["-C", dir_s, "checkout", "-b", branch]);
     }
     run_git(None, &["-C", dir_s, "checkout", branch])
 }

@@ -43,21 +43,11 @@ fn rel(base: &Path, p: &Path) -> String {
 
 /// `git -C dir args…` → stdout, or its stderr as the error.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
+    crate::v5::ops::git::run_in(dir, args)
 }
 
 /// Uncommitted changes (tracked or untracked, not ignored) under `path`.
-fn dirty(repo_dir: &Path, path: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn dirty(repo_dir: &Path, path: &Path) -> Result<Vec<String>, String> {
     let r = rel(repo_dir, path);
     let out = git(repo_dir, &["status", "--porcelain", "--", &r])?;
     Ok(out.lines().map(str::to_string).collect())
@@ -317,26 +307,10 @@ pub async fn bump(tx: Tx, a: BumpArgs) {
     }
     for ((repo, repo_dir), manifests) in by_repo {
         let mut files: Vec<String> = manifests.iter().map(|m| rel(&repo_dir, m)).collect();
-        let lock = repo_dir.join("Cargo.lock");
-        if lock.is_file() {
-            let lock_was_clean = dirty(&repo_dir, &lock).is_ok_and(|d| d.is_empty());
-            let out = tokio::process::Command::new("cargo")
-                .args(["metadata", "--format-version", "1", "--manifest-path"])
-                .arg(repo_dir.join("Cargo.toml"))
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .output()
-                .await;
-            match out {
-                Ok(o) if o.status.success() => {
-                    let tracked = git(&repo_dir, &["ls-files", "--error-unmatch", "Cargo.lock"]).is_ok();
-                    if tracked && lock_was_clean && dirty(&repo_dir, &lock).is_ok_and(|d| !d.is_empty()) {
-                        files.push("Cargo.lock".into());
-                    }
-                }
-                Ok(o) => note(&tx, format!("{repo}: Cargo.lock not refreshed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or(""))),
-                Err(x) => note(&tx, format!("{repo}: Cargo.lock not refreshed: {x}")),
-            }
+        match refresh_lock(&repo_dir).await {
+            Ok(true) => files.push("Cargo.lock".into()),
+            Ok(false) => {}
+            Err(x) => note(&tx, format!("{repo}: Cargo.lock not refreshed: {x}")),
         }
         if !a.commit {
             send(&tx, BuildEvent::BumpCommitted { repo, path: repo_dir.display().to_string(), commit: None, files });
@@ -370,6 +344,117 @@ pub async fn bump(tx: Tx, a: BumpArgs) {
             }
         }
     }
+}
+
+// ======================================================================
+// link
+// ======================================================================
+
+const LINK_MARK: &str = "# Written by hyperforge build link; `build unlink` removes it.";
+const LOCK_CLEAN: &str = "# Cargo.lock was clean at link.";
+
+/// Add a line to a checkout's own `info/exclude`, so nothing tracked changes.
+fn exclude_locally(dir: &Path, line: &str) -> Result<(), String> {
+    let rel_path = git(dir, &["rev-parse", "--git-path", "info/exclude"])?;
+    let path = dir.join(rel_path.trim());
+    let have = std::fs::read_to_string(&path).unwrap_or_default();
+    if have.lines().any(|l| l == line) {
+        return Ok(());
+    }
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, format!("{have}{line}\n")).map_err(|e| e.to_string())
+}
+
+/// Point one checkout's cargo at sibling checkouts of the included crates,
+/// through a `.cargo/config.toml` git ignores. The checkout's manifests stay
+/// as published.
+pub async fn link(tx: Tx, repos: Vec<(String, PathBuf)>, path: PathBuf, include: Vec<String>, exclude: Vec<String>) {
+    let Some((chain, sel)) = discover_selected(&tx, &repos, &include, &exclude, false) else { return };
+    let here = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let entries: Vec<(String, PathBuf)> = sel
+        .iter()
+        .map(|&i| &chain.crates[i])
+        .filter(|c| c.kind == PackageKind::Cargo && c.repo_dir.canonicalize().map_or(true, |d| d != here))
+        .map(|c| (c.name.clone(), c.dir.clone()))
+        .collect();
+    if entries.is_empty() {
+        return err(&tx, "validation", "no crates to link: the include matched nothing outside this checkout");
+    }
+    let config = path.join(".cargo/config.toml");
+    let ours = std::fs::read_to_string(&config).ok().is_none_or(|s| s.starts_with(LINK_MARK));
+    if !ours {
+        return err(&tx, "conflict", format!("{} exists and is not build link's", config.display()));
+    }
+    if git(&path, &["ls-files", "--error-unmatch", ".cargo/config.toml"]).is_ok() {
+        return err(&tx, "conflict", format!("{} is tracked", config.display()));
+    }
+    let lock = path.join("Cargo.lock");
+    let clean = git(&path, &["ls-files", "--error-unmatch", "Cargo.lock"]).is_ok()
+        && dirty(&path, &lock).is_ok_and(|d| d.is_empty());
+    let mut text = format!("{LINK_MARK}\n");
+    if clean {
+        text.push_str(LOCK_CLEAN);
+        text.push('\n');
+    }
+    text.push_str(&chain::patch_config(&entries));
+    let done = std::fs::create_dir_all(path.join(".cargo"))
+        .map_err(|e| e.to_string())
+        .and_then(|()| std::fs::write(&config, text).map_err(|e| e.to_string()))
+        .and_then(|()| exclude_locally(&path, ".cargo/config.toml"));
+    if let Err(e) = done {
+        return err(&tx, "io", format!("{}: {e}", config.display()));
+    }
+    note(&tx, "Cargo.lock will move while linked; `build unlink` restores it if it was clean.");
+    send(&tx, BuildEvent::Linked {
+        path: path.display().to_string(),
+        crates: entries.into_iter().map(|(n, _)| n).collect(),
+    });
+}
+
+/// Undo [`link`]: its config goes, and a lockfile that was clean comes back.
+pub async fn unlink(tx: Tx, path: PathBuf) {
+    let config = path.join(".cargo/config.toml");
+    let Ok(text) = std::fs::read_to_string(&config) else {
+        return err(&tx, "not_found", format!("{} is not there", config.display()));
+    };
+    if !text.starts_with(LINK_MARK) {
+        return err(&tx, "conflict", format!("{} is not build link's", config.display()));
+    }
+    if let Err(e) = std::fs::remove_file(&config) {
+        return err(&tx, "io", e.to_string());
+    }
+    let _ = std::fs::remove_dir(path.join(".cargo"));
+    if text.contains(LOCK_CLEAN) {
+        if let Err(e) = git(&path, &["checkout", "--", "Cargo.lock"]) {
+            note(&tx, format!("Cargo.lock not restored: {e}"));
+        }
+    }
+    send(&tx, BuildEvent::Unlinked { path: path.display().to_string() });
+}
+
+/// Bring a repo's `Cargo.lock` up with its manifests. True when a tracked
+/// lockfile that was clean changed, so it belongs in the bump's commit.
+pub(crate) async fn refresh_lock(repo_dir: &Path) -> Result<bool, String> {
+    let lock = repo_dir.join("Cargo.lock");
+    if !lock.is_file() {
+        return Ok(false);
+    }
+    let was_clean = dirty(repo_dir, &lock).is_ok_and(|d| d.is_empty());
+    let out = tokio::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--manifest-path"])
+        .arg(repo_dir.join("Cargo.toml"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|x| x.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("").to_string());
+    }
+    let tracked = git(repo_dir, &["ls-files", "--error-unmatch", "Cargo.lock"]).is_ok();
+    Ok(tracked && was_clean && dirty(repo_dir, &lock).is_ok_and(|d| !d.is_empty()))
 }
 
 // ======================================================================
