@@ -27,7 +27,14 @@ pub enum BuildEvent {
         #[serde(flatten)]
         finding: manifest::Finding,
     },
-    ValidateOk { name: String, total: u32 },
+    /// `check_manifests`: every package manifest parsed. `skipped` members
+    /// hold no package (docs, infra, scripts).
+    ValidateOk {
+        name: String,
+        total: u32,
+        #[serde(default)]
+        skipped: u32,
+    },
     /// `release_asset`: one file, as planned or as uploaded (`dry_run` false).
     ReleaseAsset {
         repo: String,
@@ -55,7 +62,13 @@ pub enum BuildEvent {
     Linked { path: String, crates: Vec<String> },
     /// `unlink`: the checkout is back on published crates.
     Unlinked { path: String },
-    ValidateFailed { name: String, total: u32, failed: u32 },
+    ValidateFailed {
+        name: String,
+        total: u32,
+        failed: u32,
+        #[serde(default)]
+        skipped: u32,
+    },
     NameMismatch {
         #[serde(rename = "ref")]
         reference: crate::v5::repos::RepoRefWire,
@@ -309,7 +322,7 @@ fn err<S: Into<String>>(code: S, msg: impl Into<String>) -> BuildEvent {
 }
 
 /// Resolve a workspace `name` → list of `(ref, checkout_dir)`.
-fn workspace_members(
+pub(crate) fn workspace_members(
     config_dir: &std::path::Path,
     name: &str,
 ) -> Result<Vec<(crate::v5::repos::RepoRefWire, PathBuf)>, String> {
@@ -470,9 +483,12 @@ impl BuildService {
         )])
     }
 
-    /// Parse every member's package manifest (Cargo.toml, package.json,
-    /// .cabal, pyproject.toml) and report the ones that do not parse.
-    /// Builds nothing and runs no container: a quick manifest check.
+    /// Parse every member's package manifests and report the ones that do
+    /// not parse: its cargo crates as the publish chain reads them (a root
+    /// package, a virtual workspace's members), its root `.cabal`, else a
+    /// `package.json` or `pyproject.toml`. A member with none of these holds
+    /// no package and is skipped, not failed. Builds nothing and runs no
+    /// container: a quick manifest check.
     #[plexus_macros::method(params(name = "Workspace name"))]
     pub async fn check_manifests(
         &self,
@@ -485,19 +501,38 @@ impl BuildService {
             };
             let total = u32::try_from(members.len()).unwrap_or(u32::MAX);
             let mut failed = 0u32;
+            let mut skipped = 0u32;
             for (r, dir) in &members {
-                if let Err(e) = manifest::detect_and_parse(dir) {
+                let repo = format!("{}/{}", r.org, r.name);
+                let chain = crate::v5::build::chain::discover(&[(repo.clone(), dir.clone())]);
+                if !chain.warnings.is_empty() {
                     failed += 1;
                     yield BuildEvent::Error {
-                        code: Some(e.code().into()),
-                        message: format!("{}/{}: {}", r.org, r.name, e),
+                        code: Some("manifest_parse_error".into()),
+                        message: chain.warnings.join("; "),
                     };
+                    continue;
+                }
+                if !chain.crates.is_empty() {
+                    continue;
+                }
+                // Not a cargo or Cabal package: npm or Python, or none.
+                match manifest::detect_and_parse(dir) {
+                    Ok(_) => {}
+                    Err(manifest::ManifestError::NotFound(_)) => skipped += 1,
+                    Err(e) => {
+                        failed += 1;
+                        yield BuildEvent::Error {
+                            code: Some(e.code().into()),
+                            message: format!("{repo}: {e}"),
+                        };
+                    }
                 }
             }
             if failed == 0 {
-                yield BuildEvent::ValidateOk { name, total };
+                yield BuildEvent::ValidateOk { name, total, skipped };
             } else {
-                yield BuildEvent::ValidateFailed { name, total, failed };
+                yield BuildEvent::ValidateFailed { name, total, failed, skipped };
             }
         }
     }

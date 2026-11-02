@@ -94,6 +94,45 @@ echo "$out" | hf_assert_event '.type == "validate_ok" and .total == 2'
 out=$(hf_cmd build validate --name main || true)
 echo "$out" | hf_assert_event '.type == "error" and .code == "renamed" and (.message | contains("check_manifests"))'
 
+# --- HYPERFORGE-57: a Cabal-only package and a virtual cargo workspace
+#     parse; a docs-only member holds no package and is skipped, not failed ---
+mkdir -p "$TMP/docs" "$TMP/hask" "$TMP/virt/member"
+echo "# notes" > "$TMP/docs/README.md"
+cat > "$TMP/hask/hask.cabal" <<'CABAL'
+cabal-version: 2.4
+name:          hask
+version:       0.1.0.0
+library
+  build-depends: base
+CABAL
+cat > "$TMP/virt/Cargo.toml" <<'TOML'
+[workspace]
+members = ["member"]
+TOML
+cat > "$TMP/virt/member/Cargo.toml" <<'TOML'
+[package]
+name = "virt-member"
+version = "0.1.0"
+TOML
+cat >> "$HF_CONFIG/orgs/demo.yaml" <<YAML
+  - name: docs
+    remotes:
+      - url: "file://$TMP/docs"
+  - name: hask
+    remotes:
+      - url: "file://$TMP/hask"
+  - name: virt
+    remotes:
+      - url: "file://$TMP/virt"
+YAML
+cat >> "$HF_CONFIG/workspaces/main.yaml" <<YAML
+  - demo/docs
+  - demo/hask
+  - demo/virt
+YAML
+out=$(hf_cmd build check_manifests --name main)
+echo "$out" | hf_assert_event '.type == "validate_ok" and .total == 5 and .skipped == 1'
+
 # --- break beta's Cargo.toml, check_manifests now fails ---
 printf 'this = [is not (valid toml\n' > "$BETA/Cargo.toml"
 out=$(hf_cmd build check_manifests --name main)

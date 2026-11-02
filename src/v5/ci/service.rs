@@ -128,6 +128,162 @@ impl CiService {
             .unwrap_or_default()
     }
 
+    /// Run repos' `[ci]` runners from `.hyperforge/config.toml`
+    /// (HYPERFORGE-57): one repo by path, or every member of a workspace that
+    /// declares them, in workspace order. A failed step stops that repo's later
+    /// steps; other repos still run. Ends with a result table, and with an
+    /// error when anything failed.
+    #[plexus_macros::method(params(
+        path = "One repo's directory",
+        name = "A workspace: every member that declares [ci]",
+        include = "Members to run (globs on repo name; default all)",
+        exclude = "Members to leave out (globs on repo name)",
+        level = "The runner to run, by index (0 quick check, 1 full build, 2 container, 3+ custom gates such as PERF-6); default every local runner",
+        test = "Also run each runner's test command after its build (default true)",
+        dry_run = "List the steps without running them"
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run(
+        &self,
+        path: Option<String>,
+        name: Option<String>,
+        include: Option<Vec<String>>,
+        exclude: Option<Vec<String>>,
+        level: Option<u32>,
+        test: Option<bool>,
+        dry_run: Option<bool>,
+    ) -> impl Stream<Item = CiEvent> + Send + 'static {
+        let config_dir = self.config_dir.clone();
+        stream! {
+            use super::runners;
+            let single = path.is_some();
+            let targets: Vec<(String, PathBuf)> = match (path, name) {
+                (Some(p), None) => {
+                    let p = PathBuf::from(p);
+                    let n = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    vec![(n, p)]
+                }
+                (None, Some(ws)) => match crate::v5::build_service::workspace_members(&config_dir, &ws) {
+                    Ok(m) => m.into_iter().map(|(r, d)| (r.name, d)).collect(),
+                    Err(e) => { yield CiEvent::error("not_found", e); return; }
+                },
+                _ => {
+                    yield CiEvent::error("validation", "give one of path (a repo's directory) or name (a workspace)");
+                    return;
+                }
+            };
+            let include = include.unwrap_or_default();
+            let exclude = exclude.unwrap_or_default();
+            let glob = crate::v5::build::chain::glob_match;
+            let targets: Vec<(String, PathBuf)> = targets
+                .into_iter()
+                .filter(|(n, _)| include.is_empty() || include.iter().any(|g| glob(g, n)))
+                .filter(|(n, _)| !exclude.iter().any(|g| glob(g, n)))
+                .collect();
+            let level = level.map(|l| l as usize);
+            let run_tests = test.unwrap_or(true);
+            let dry = dry_run.unwrap_or(false);
+            let started = std::time::Instant::now();
+            let mut rows: Vec<runners::RepoResult> = Vec::new();
+
+            for (repo, dir) in targets {
+                let repo_started = std::time::Instant::now();
+                let path_s = dir.display().to_string();
+                let skip = |detail: String| runners::RepoResult {
+                    repo: repo.clone(), status: "skipped".into(), steps: 0, duration_ms: 0, detail: Some(detail),
+                };
+                if !dir.is_dir() {
+                    if single { yield CiEvent::error("not_found", format!("{path_s}: no such directory")); return; }
+                    let r = skip("no checkout".into());
+                    yield CiEvent::RunnerRepo { path: path_s, result: r.clone() }; rows.push(r); continue;
+                }
+                let ci = match runners::read(&dir) {
+                    Ok(Some(ci)) => ci,
+                    Ok(None) => {
+                        if single { yield CiEvent::error("no_ci", format!("{path_s}: no [ci] in .hyperforge/config.toml")); return; }
+                        let r = skip("no [ci]".into());
+                        yield CiEvent::RunnerRepo { path: path_s, result: r.clone() }; rows.push(r); continue;
+                    }
+                    Err(e) => {
+                        let r = runners::RepoResult { repo: repo.clone(), status: "failed".into(), steps: 0, duration_ms: 0, detail: Some(e.clone()) };
+                        yield CiEvent::error("invalid_config", e);
+                        yield CiEvent::RunnerRepo { path: path_s, result: r.clone() }; rows.push(r); continue;
+                    }
+                };
+                if ci.skip_validate {
+                    let r = skip("skip_validate".into());
+                    yield CiEvent::RunnerRepo { path: path_s, result: r.clone() }; rows.push(r); continue;
+                }
+                let Some(indices) = runners::select(&ci.runners, level) else {
+                    let msg = format!("no runner {} ({} declared)", level.unwrap_or(0), ci.runners.len());
+                    if single { yield CiEvent::error("validation", format!("{path_s}: {msg}")); return; }
+                    let r = skip(msg);
+                    yield CiEvent::RunnerRepo { path: path_s, result: r.clone() }; rows.push(r); continue;
+                };
+                if indices.is_empty() {
+                    let r = skip("no local runner".into());
+                    yield CiEvent::RunnerRepo { path: path_s, result: r.clone() }; rows.push(r); continue;
+                }
+                let mut steps = 0u32;
+                let mut failure: Option<String> = None;
+                'runners: for idx in indices {
+                    let runner = &ci.runners[idx];
+                    let mut plan: Vec<(&str, &Vec<String>)> = vec![("build", &runner.build)];
+                    if run_tests { plan.push(("test", &runner.test)); }
+                    for (step, cmd) in plan {
+                        if cmd.is_empty() { continue; }
+                        let command = cmd.join(" ");
+                        let event = |status: &str, exit_code, duration_ms, output_tail| CiEvent::RunnerStep {
+                            repo: repo.clone(), path: path_s.clone(), runner: u32::try_from(idx).unwrap_or(u32::MAX),
+                            kind: runner.kind, step: step.into(), command: command.clone(), status: status.into(),
+                            exit_code, duration_ms, output_tail,
+                        };
+                        steps += 1;
+                        if dry { yield event("dry_run", None, 0, None); continue; }
+                        yield event("running", None, 0, None);
+                        let out = runners::execute(cmd, &dir, runner, "docker").await;
+                        if out.ok {
+                            yield event("passed", out.exit_code, out.duration_ms, None);
+                        } else {
+                            let why = out.error.clone().unwrap_or_else(|| format!("exit {}", out.exit_code.unwrap_or(-1)));
+                            let tail = match (&out.error, out.tail.is_empty()) {
+                                (Some(e), true) => Some(e.clone()),
+                                (_, true) => None,
+                                _ => Some(out.tail.clone()),
+                            };
+                            yield event("failed", out.exit_code, out.duration_ms, tail);
+                            failure = Some(format!("L{idx} {step}: {why}"));
+                            break 'runners;
+                        }
+                    }
+                }
+                let status = if dry { "dry_run" } else if failure.is_some() { "failed" } else { "passed" };
+                let r = runners::RepoResult {
+                    repo: repo.clone(), status: status.into(), steps,
+                    duration_ms: u64::try_from(repo_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    detail: failure,
+                };
+                yield CiEvent::RunnerRepo { path: path_s, result: r.clone() };
+                rows.push(r);
+            }
+
+            let count = |s: &str| u32::try_from(rows.iter().filter(|r| r.status == s).count()).unwrap_or(u32::MAX);
+            let failed = count("failed");
+            yield CiEvent::RunnerSummary {
+                repos: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+                passed: count("passed"),
+                failed,
+                skipped: count("skipped"),
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                table: runners::table(&rows),
+            };
+            if failed > 0 {
+                let names: Vec<&str> = rows.iter().filter(|r| r.status == "failed").map(|r| r.repo.as_str()).collect();
+                yield CiEvent::error("ci_failed", format!("{failed} failed: {}", names.join(", ")));
+            }
+        }
+    }
+
     /// Register a repo's pipelines (its .hyperforge/pipelines.toml). The path
     /// is kept in the config dir; a name already registered from another
     /// repo is refused, and so is a file that does not parse.

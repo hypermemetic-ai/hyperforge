@@ -164,6 +164,37 @@ pub enum CiEvent {
     },
     /// Nothing is running on the run any more.
     Idle { pipeline: String, run: u64 },
+    /// `ci run`: one `[ci]` runner step, as it starts (`running`) and as it
+    /// ends (`passed`, `failed`), or as it would run (`dry_run`).
+    RunnerStep {
+        repo: String,
+        path: String,
+        runner: u32,
+        kind: super::runners::RunnerKind,
+        step: String,
+        command: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        duration_ms: u64,
+        /// The output's last lines, on failure.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_tail: Option<String>,
+    },
+    /// `ci run`: one repo's result.
+    RunnerRepo {
+        path: String,
+        result: super::runners::RepoResult,
+    },
+    /// `ci run`: the whole run, with a table of its repos.
+    RunnerSummary {
+        repos: u32,
+        passed: u32,
+        failed: u32,
+        skipped: u32,
+        duration_ms: u64,
+        table: String,
+    },
     Error {
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<String>,

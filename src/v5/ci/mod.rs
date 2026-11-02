@@ -11,6 +11,7 @@ pub mod events;
 pub mod service;
 pub mod registry;
 pub mod runner;
+pub mod runners;
 pub mod spec;
 pub mod store;
 
