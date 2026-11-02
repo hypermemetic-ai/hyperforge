@@ -219,6 +219,12 @@ impl HyperforgeService {
         )
     }
 
+    /// Images namespace — HYPERFORGE-59. Container images on the org's registry.
+    #[plexus_macros::child]
+    fn images(&self) -> crate::v5::images_service::ImagesService {
+        crate::v5::images_service::ImagesService::new(self.state.config_dir.clone())
+    }
+
     /// CI namespace — HYPERFORGE-22. Pipelines declared in repos; each
     /// registered pipeline is a dynamic child of `ci`.
     #[plexus_macros::child]

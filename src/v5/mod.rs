@@ -7,6 +7,7 @@ pub mod build;
 pub mod build_service;
 pub mod ci;
 pub mod config;
+pub mod images_service;
 pub mod service;
 pub mod ops;
 pub mod orgs;

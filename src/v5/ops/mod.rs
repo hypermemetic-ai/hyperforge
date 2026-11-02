@@ -9,6 +9,7 @@
 //! grep-based checkpoint.
 
 pub mod state;
+pub mod images;
 pub mod pr;
 pub mod release_assets;
 pub mod repo;
