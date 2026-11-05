@@ -388,6 +388,20 @@ fn resolve_single_repo_dir(
     Err(format!("no workspace lists {org}/{name}"))
 }
 
+/// HYPERFORGE-62 (5): the first workspace listing `org/name`, and its repos.
+fn containing_workspace(
+    config_dir: &std::path::Path,
+    org: &str,
+    name: &str,
+) -> Option<(String, Vec<(String, PathBuf)>)> {
+    let wss = crate::v5::ops::state::load_workspaces(&config_dir.join("workspaces")).ok()?;
+    let want = format!("{org}/{name}");
+    wss.values().find_map(|ws| {
+        let repos = chain_repos(config_dir, ws.name.as_str()).ok()?;
+        repos.iter().any(|(r, _)| *r == want).then(|| (ws.name.as_str().to_string(), repos))
+    })
+}
+
 #[plexus_macros::activation(
     trait = "BuildApi",
     methods = marked,
@@ -851,7 +865,7 @@ impl BuildService {
     ) -> impl Stream<Item = BuildEvent> + Send + 'static {
         use futures::StreamExt as _;
         let config_dir = self.config_dir.clone();
-        let chain_args = |repos, include, exclude, closure: bool, execute: bool| {
+        let chain_args = |repos, include, exclude, closure: bool, execute: bool, context, workspace| {
             let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
             crate::v5::build::chain_ops::PublishArgs {
                 repos,
@@ -859,6 +873,8 @@ impl BuildService {
                 exclude,
                 closure,
                 execute,
+                context,
+                workspace,
                 token: if execute { resolve_store_secret(&config_dir, "secrets://cargo/token") } else { None },
                 hackage_secret: if execute { resolve_store_secret(&config_dir, "secrets://hackage/token") } else { None },
                 log_dir: self.state_dir.join("publish").join(stamp),
@@ -876,6 +892,8 @@ impl BuildService {
                 exclude.unwrap_or_default(),
                 closure.unwrap_or(true),
                 execute.unwrap_or(false),
+                Vec::new(),
+                Some(name),
             );
             return from_task(move |tx| crate::v5::build::chain_ops::publish(tx, args)).boxed();
         };
@@ -884,12 +902,17 @@ impl BuildService {
         if let Ok(dir) = resolve_single_repo_dir(&config_dir, &org, &name) {
             match one_repo_cabal_package(&dir, channel.as_deref()) {
                 Ok(Some(package)) => {
+                    // HYPERFORGE-62 (5): its workspace is where the packages
+                    // it needs live; one not on Hackage refuses the publish.
+                    let (workspace, context) = containing_workspace(&config_dir, &org, &name).unzip();
                     let args = chain_args(
                         vec![(format!("{org}/{name}"), dir)],
                         vec![package],
                         Vec::new(),
                         false,
                         execute.unwrap_or(false),
+                        context.unwrap_or_default(),
+                        workspace,
                     );
                     return from_task(move |tx| crate::v5::build::chain_ops::publish(tx, args)).boxed();
                 }

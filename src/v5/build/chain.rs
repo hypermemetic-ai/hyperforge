@@ -879,6 +879,24 @@ pub fn drift(crate_bytes: &[u8], dir: &Path) -> Result<Drift, String> {
     Ok(out)
 }
 
+/// The files a package (a `.crate`, or a Hackage sdist: `<name>-<version>/<rel>`)
+/// carries, by `<rel>`.
+pub fn package_paths(bytes: &[u8]) -> Result<BTreeSet<String>, String> {
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut ar = tar::Archive::new(gz);
+    let mut out = BTreeSet::new();
+    for entry in ar.entries().map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path().map_err(|e| e.to_string())?;
+        let rel: PathBuf = path.components().skip(1).collect();
+        out.insert(rel.to_string_lossy().to_string());
+    }
+    Ok(out)
+}
+
 fn git_ignored(dir: &Path, paths: &[String]) -> BTreeSet<String> {
     use std::io::Write as _;
     if paths.is_empty() {

@@ -285,14 +285,88 @@ async fn a_failed_dry_run_publishes_nothing() {
     let step = "[publish]\ndry_run = \"echo broken >&2; exit 3\"\nexecute = \"touch ../executed\"\n";
     let (ws, config) = fixture(t.path(), step);
     let service = HyperforgeService::with_state_dir(config, &t.path().join("state"));
-    let ev = call(&service, "build.publish", json!({"name": "chain", "include": ["hf23t-app"], "closure": false, "execute": true})).await;
+    let ev = call(&service, "build.publish", json!({"name": "chain", "include": ["hf23t-a*"], "closure": false, "execute": true})).await;
     let e = of_type(&ev, "error");
     assert_eq!(e[0]["code"], "dry_run_failed", "{ev:#?}");
     let failed = of_type(&ev, "publish_group").into_iter().find(|g| g["state"] == "failed").unwrap();
     assert!(failed["tail"].as_str().unwrap().contains("broken"));
     assert!(!ws.join("executed").exists());
     assert_eq!(of_type(&ev, "publish_summary")[0]["published"], json!([]));
+    // HYPERFORGE-62 (5): without the closure, a dependency neither in the run
+    // nor on the registry refuses the publish before anything runs.
+    let ev = call(&service, "build.publish", json!({"name": "chain", "include": ["hf23t-app"], "closure": false})).await;
+    let e = of_type(&ev, "error");
+    assert_eq!(e[0]["code"], "unpublished_dependency", "{ev:#?}");
+    assert!(e[0]["message"].as_str().unwrap().contains("hf23t-app needs hf23t-api 0.6.0"), "{ev:#?}");
+    assert!(of_type(&ev, "publish_group").is_empty());
     // include is required.
     let ev = call(&service, "build.publish", json!({"name": "chain"})).await;
     assert_eq!(of_type(&ev, "error")[0]["code"], "validation");
+}
+
+fn cargo(dir: &Path, args: &[&str]) {
+    let out = Command::new("cargo").current_dir(dir).args(args).output().unwrap();
+    assert!(out.status.success(), "cargo {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// HYPERFORGE-62 (4) and (2), with the real cargo: `hf62t-top` needs
+/// `hf62t-mid` (another repo), which needs `hf62t-base` — a member of
+/// top's own workspace. Three groups, split / mid / split: top's dry run
+/// resolves base through the patch (it is not on crates.io), and the dry
+/// runs leave every tracked `Cargo.lock` as it was.
+#[tokio::test]
+async fn a_crate_needing_an_earlier_group_of_its_own_workspace_dry_runs_and_leaves_trees_clean() {
+    let t = tempfile::tempdir().unwrap();
+    registry();
+    std::env::set_var("CARGO_TARGET_DIR", t.path().join("target"));
+    let ws = t.path().join("ws");
+    write(
+        &ws.join("split/Cargo.toml"),
+        &format!("[workspace]\nmembers = [\"base\"]\n\n[package]\nname = \"hf62t-top\"\nversion = \"0.1.0\"\n{META}\n[dependencies]\nhf62t-base = {{ path = \"base\", version = \"0.1.0\" }}\nhf62t-mid = {{ path = \"../mid\", version = \"0.1.0\" }}\n"),
+    );
+    write(&ws.join("split/src/lib.rs"), LIB);
+    write(&ws.join("split/base/Cargo.toml"), &format!("[package]\nname = \"hf62t-base\"\nversion = \"0.1.0\"\n{META}"));
+    write(&ws.join("split/base/src/lib.rs"), LIB);
+    write(
+        &ws.join("mid/Cargo.toml"),
+        &format!("[package]\nname = \"hf62t-mid\"\nversion = \"0.1.0\"\n{META}\n[dependencies]\nhf62t-base = {{ path = \"../split/base\", version = \"0.1.0\" }}\n"),
+    );
+    write(&ws.join("mid/src/lib.rs"), LIB);
+    for r in ["split", "mid"] {
+        let d = ws.join(r);
+        // Cargo.lock is tracked here: the dry run must not move it.
+        write(&d.join(".gitignore"), "target/\n");
+        cargo(&d, &["generate-lockfile", "--offline"]);
+        git(&d, &["init", "-q", "-b", "main"]);
+        git(&d, &["config", "user.email", "t@example.com"]);
+        git(&d, &["config", "user.name", "t"]);
+        git(&d, &["config", "commit.gpgSign", "false"]);
+        git(&d, &["add", "-A"]);
+        git(&d, &["commit", "-q", "-m", "init"]);
+    }
+    let config = t.path().join("config");
+    write(
+        &config.join("workspaces/traps.yaml"),
+        &format!("name: traps\npath: {}\nrepos:\n- o/split\n- o/mid\n", ws.display()),
+    );
+    let service = HyperforgeService::with_state_dir(config, &t.path().join("state"));
+    let ev = call(&service, "build.publish", json!({"name": "traps", "include": ["hf62t-top"]})).await;
+    let order: Vec<&str> = of_type(&ev, "publish_planned").iter().map(|e| e["name"].as_str().unwrap()).collect();
+    assert_eq!(order, ["hf62t-base", "hf62t-mid", "hf62t-top"], "{ev:#?}");
+    let done: Vec<(&str, &str)> = of_type(&ev, "publish_group")
+        .iter()
+        .filter(|g| g["state"] != "started")
+        .map(|g| (g["repo"].as_str().unwrap(), g["state"].as_str().unwrap()))
+        .collect();
+    assert_eq!(done, [("o/split", "ok"), ("o/mid", "ok"), ("o/split", "ok")], "{ev:#?}");
+    assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
+    // top's patch names base, of its own workspace.
+    let last = of_type(&ev, "publish_group").into_iter().rfind(|g| g["state"] == "ok").unwrap();
+    let step = last["step"].as_str().unwrap();
+    let patch = step.split("--config ").nth(1).expect("top's dry run has a patch");
+    assert!(std::fs::read_to_string(patch).unwrap().contains("\"hf62t-base\""), "{step}");
+    assert_eq!(of_type(&ev, "publish_summary")[0]["verified"], 3, "{ev:#?}");
+    for r in ["split", "mid"] {
+        assert_eq!(git(&ws.join(r), &["status", "--porcelain"]), "", "{r} after the dry run");
+    }
 }

@@ -178,9 +178,77 @@ fn split_cabal_dep(dep: &str) -> (&str, Option<String>) {
     (dep.trim(), None)
 }
 
+/// Does `version` fall in a `build-depends` range (`>= 0.6 && < 0.7`,
+/// `^>= 1.2.3`, `== 1.2.*`, `||`, `-any`)? `None`: a range this reader does
+/// not read (a version set `{…}`, an unknown operator).
+#[must_use]
+pub fn range_matches(range: &str, version: &str) -> Option<bool> {
+    use std::cmp::Ordering;
+    let cmp = |a: &str, b: &str| super::chain::compare_versions(a, b);
+    let one = |c: &str| -> Option<bool> {
+        let c = c.trim().trim_start_matches('(').trim_end_matches(')').trim();
+        match c {
+            "-any" | "" => return Some(true),
+            "-none" => return Some(false),
+            _ => {}
+        }
+        let op_len = c.find(|ch: char| ch.is_ascii_digit()).unwrap_or(c.len());
+        let (op, v) = (c[..op_len].trim(), c[op_len..].trim());
+        if v.is_empty() || v.contains(['{', ' ']) {
+            return None;
+        }
+        if let Some(prefix) = v.strip_suffix(".*") {
+            return match op {
+                "==" => Some(version == prefix || version.starts_with(&format!("{prefix}."))),
+                _ => None,
+            };
+        }
+        let o = cmp(version, v)?;
+        Some(match op {
+            ">=" => o != Ordering::Less,
+            ">" => o == Ordering::Greater,
+            "<=" => o != Ordering::Greater,
+            "<" => o == Ordering::Less,
+            "==" => o == Ordering::Equal,
+            // PVP: the major version is the first two components.
+            "^>=" => {
+                let mut parts: Vec<u64> = v.split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+                parts.resize(2, 0);
+                let upper = format!("{}.{}", parts[0], parts[1] + 1);
+                o != Ordering::Less && cmp(version, &upper)? == Ordering::Less
+            }
+            _ => return None,
+        })
+    };
+    let mut any = false;
+    for disjunct in range.split("||") {
+        let mut all = true;
+        for c in disjunct.split("&&") {
+            all &= one(c)?;
+        }
+        any |= all;
+    }
+    Some(any)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranges_read_as_cabal_reads_them() {
+        assert_eq!(range_matches(">= 0.5 && < 0.6", "0.5.2.0"), Some(true));
+        assert_eq!(range_matches(">= 0.5 && < 0.6", "0.6.0.0"), Some(false));
+        assert_eq!(range_matches(">=4.0 && <5", "4.0.0"), Some(true));
+        assert_eq!(range_matches("^>= 1.2.3", "1.2.9"), Some(true));
+        assert_eq!(range_matches("^>= 1.2.3", "1.3"), Some(false));
+        assert_eq!(range_matches("^>= 1.2.3", "1.2.2"), Some(false));
+        assert_eq!(range_matches("== 1.2.*", "1.2.4.1"), Some(true));
+        assert_eq!(range_matches("== 1.2.*", "1.20"), Some(false));
+        assert_eq!(range_matches("< 1 || >= 2", "2.1"), Some(true));
+        assert_eq!(range_matches("-any", "9"), Some(true));
+        assert_eq!(range_matches("^>= { 1.2, 1.3 }", "1.2"), None);
+    }
     use std::fs;
     use tempfile::TempDir;
 
