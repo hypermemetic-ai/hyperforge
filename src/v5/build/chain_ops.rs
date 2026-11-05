@@ -53,6 +53,181 @@ pub(crate) fn dirty(repo_dir: &Path, path: &Path) -> Result<Vec<String>, String>
     Ok(out.lines().map(str::to_string).collect())
 }
 
+/// hyperforge's own file in a repo, which hyperforge itself rewrites (an
+/// org move, `repo_name`).
+const HF_CONFIG: &str = ".hyperforge/config.toml";
+
+/// One `git status` entry: its `XY` code and its path from the repo root.
+#[derive(Debug, Clone)]
+struct StatusEntry {
+    xy: String,
+    path: String,
+}
+
+impl StatusEntry {
+    fn untracked(&self) -> bool {
+        self.xy == "??"
+    }
+
+    fn deleted(&self) -> bool {
+        self.xy.contains('D')
+    }
+
+    fn line(&self) -> String {
+        format!("{} {}", self.xy, self.path)
+    }
+}
+
+/// `git status` under `path`, every untracked file listed by itself (or
+/// none, with `untracked` false). Paths are unquoted (`-z`).
+fn status(repo_dir: &Path, path: &Path, untracked: bool) -> Result<Vec<StatusEntry>, String> {
+    let r = rel(repo_dir, path);
+    let mode = if untracked { "--untracked-files=all" } else { "--untracked-files=no" };
+    let out = git(repo_dir, &["status", "--porcelain=v1", "-z", mode, "--", &r])?;
+    let mut entries = Vec::new();
+    let mut parts = out.split('\0');
+    while let Some(e) = parts.next() {
+        if e.len() < 4 {
+            continue;
+        }
+        let xy = e[..2].to_string();
+        // A rename or copy: `XY new\0old\0`.
+        if xy.starts_with(['R', 'C']) {
+            parts.next();
+        }
+        entries.push(StatusEntry { xy, path: e[3..].to_string() });
+    }
+    Ok(entries)
+}
+
+/// A path from the repo root, relative to `dir` (inside the repo), if under it.
+fn under(repo_dir: &Path, dir: &Path, path: &str) -> Option<String> {
+    let prefix = rel(repo_dir, dir);
+    if prefix == "." {
+        return Some(path.to_string());
+    }
+    path.strip_prefix(&format!("{prefix}/")).map(str::to_string)
+}
+
+/// HYPERFORGE-62 (1): is the repo's `.hyperforge/config.toml` tracked and
+/// changed? hyperforge rewrites it (the org move, `repo_name`); `cargo
+/// package` ships it, so cargo's own check would refuse it as well.
+fn hf_config_changed(repo_dir: &Path) -> bool {
+    status(repo_dir, &repo_dir.join(HF_CONFIG), false)
+        .is_ok_and(|s| s.iter().any(|e| !e.untracked() && !e.deleted()))
+}
+
+/// The files `cargo package` ships for a crate (paths in the package), by
+/// cargo itself. Lists only: no build, no registry.
+async fn cargo_package_files(c: &CrateNode) -> Result<Vec<String>, String> {
+    let out = tokio::process::Command::new("cargo")
+        .args(["package", "--list", "--allow-dirty", "--offline", "--manifest-path"])
+        .arg(&c.manifest)
+        .current_dir(&c.ws_root)
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("cargo package --list: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("cargo package --list: {}", stderr.lines().last().unwrap_or("").trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect())
+}
+
+/// HYPERFORGE-62 (3): the uncommitted changes that keep a package from an
+/// execute.
+///
+/// A Hackage package: tracked changes only; `cabal sdist` ships what the
+/// `.cabal` file lists, and an untracked file in the sdist is caught after
+/// the dry run ([`untracked_in_sdist`]). A cargo crate: the changed files
+/// cargo would package (cargo's own list, and so cargo's own check);
+/// deletions count. A repo's own `[publish]` step, or a crate cargo cannot
+/// list: every change under its directory.
+async fn blockers(c: &CrateNode, custom: bool) -> Result<Vec<String>, String> {
+    if c.kind == PackageKind::Cabal {
+        return Ok(status(&c.repo_dir, &c.dir, false)?.iter().map(StatusEntry::line).collect());
+    }
+    let entries = status(&c.repo_dir, &c.dir, true)?;
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let shipped = if custom { None } else { cargo_package_files(c).await.ok() };
+    let Some(shipped) = shipped else {
+        return Ok(entries.iter().map(StatusEntry::line).collect());
+    };
+    Ok(entries
+        .iter()
+        .filter(|e| {
+            e.deleted() || under(&c.repo_dir, &c.dir, &e.path).is_some_and(|p| shipped.contains(&p))
+        })
+        .map(StatusEntry::line)
+        .collect())
+}
+
+/// HYPERFORGE-62 (3): untracked files a Cabal package's sdist (the dry
+/// run's tarball) carries — what would ship and is not committed.
+fn untracked_in_sdist(c: &CrateNode, tarball: &Path) -> Result<Vec<String>, String> {
+    let untracked: Vec<String> = status(&c.repo_dir, &c.dir, true)?
+        .into_iter()
+        .filter(StatusEntry::untracked)
+        .filter_map(|e| under(&c.repo_dir, &c.dir, &e.path))
+        .collect();
+    if untracked.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bytes = std::fs::read(tarball).map_err(|e| format!("{}: {e}", tarball.display()))?;
+    let shipped = chain::package_paths(&bytes).map_err(|e| format!("{}: {e}", tarball.display()))?;
+    Ok(untracked.into_iter().filter(|u| shipped.contains(u)).map(|u| format!("?? {u}")).collect())
+}
+
+/// HYPERFORGE-62 (2): the cargo workspaces' `Cargo.lock`s as they were, put
+/// back byte for byte — a dry run's `[patch.crates-io]` leaves
+/// `[[patch.unused]]` entries in them. Put back on drop as well.
+struct LockSnapshot(Vec<(PathBuf, Option<Vec<u8>>)>);
+
+impl LockSnapshot {
+    fn take<'a>(roots: impl IntoIterator<Item = &'a Path>) -> Self {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut held = Vec::new();
+        for root in roots {
+            let lock = root.join("Cargo.lock");
+            if seen.insert(lock.clone()) {
+                let bytes = std::fs::read(&lock).ok();
+                held.push((lock, bytes));
+            }
+        }
+        Self(held)
+    }
+
+    /// Put each back where it moved. Returns what could not be.
+    fn restore(&self) -> Vec<String> {
+        let mut failed = Vec::new();
+        for (lock, before) in &self.0 {
+            let now = std::fs::read(lock).ok();
+            if now == *before {
+                continue;
+            }
+            let done = match before {
+                Some(b) => std::fs::write(lock, b),
+                None => std::fs::remove_file(lock),
+            };
+            if let Err(e) = done {
+                failed.push(format!("{}: {e}", lock.display()));
+            }
+        }
+        failed
+    }
+}
+
+impl Drop for LockSnapshot {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
 /// Each package's registry.
 struct Registries {
     crates: Registry,
@@ -471,6 +646,12 @@ pub struct PublishArgs {
     /// What the secret store holds at `hackage/token`.
     pub hackage_secret: Option<String>,
     pub log_dir: PathBuf,
+    /// HYPERFORGE-62 (5): the repos a dependency may live in, when they are
+    /// more than `repos` (one repo's publish, inside its workspace). Empty:
+    /// `repos`.
+    pub context: Vec<(String, PathBuf)>,
+    /// The workspace's name, for the command an error suggests.
+    pub workspace: Option<String>,
 }
 
 struct Group {
@@ -559,13 +740,56 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         note(&tx, "every selected package's version is on its registry already — bump first");
         return send(&tx, summary(a.execute, planned, skipped, 0, vec![], vec![], vec![]));
     }
+    // HYPERFORGE-62 (5): a package goes up after what it needs. A workspace
+    // package it depends on that this run does not publish must be on its
+    // registry already, at a version the requirement takes.
+    let context = if a.context.is_empty() { None } else { Some(chain::discover(&a.context)) };
+    match missing_dependencies(&chain, context.as_ref().unwrap_or(&chain), &groups, &registry).await {
+        Ok(missing) if !missing.is_empty() => {
+            let names: Vec<&str> = groups.iter().flat_map(|g| &g.crates).map(|&i| chain.crates[i].name.as_str()).collect();
+            let how = a.workspace.as_deref().map_or_else(
+                || "include them (closure on)".to_string(),
+                |w| format!("publish the chain: build publish --name {w} --include {}", names.join(" --include ")),
+            );
+            return err(&tx, "unpublished_dependency", format!("nothing published — {}; {how}", missing.join("; ")));
+        }
+        Ok(_) => {}
+        Err(e) => return err(&tx, "registry", e),
+    }
+    // HYPERFORGE-62 (1): hyperforge's own `.hyperforge/config.toml`, changed by
+    // hyperforge, is committed before an execute (cargo ships it, and would
+    // refuse it uncommitted).
+    let mut repos_in_run: Vec<(String, PathBuf)> = Vec::new();
+    for g in &groups {
+        if !repos_in_run.iter().any(|(_, d)| *d == g.repo_dir) {
+            repos_in_run.push((g.repo.clone(), g.repo_dir.clone()));
+        }
+    }
+    for (repo, dir) in &repos_in_run {
+        if !hf_config_changed(dir) {
+            continue;
+        }
+        if !a.execute {
+            note(&tx, format!("{repo}: {HF_CONFIG} has uncommitted changes; an execute commits it first"));
+            continue;
+        }
+        let msg = format!("chore: {HF_CONFIG} (hyperforge build publish)");
+        match git(dir, &["commit", "-q", "-m", &msg, "--", HF_CONFIG]).and_then(|_| git(dir, &["rev-parse", "--short", "HEAD"])) {
+            Ok(h) => note(&tx, format!("{repo}: committed {HF_CONFIG} ({}) before publishing", h.trim())),
+            Err(e) => return err(&tx, "git", format!("{repo}: committing {HF_CONFIG}: {e}")),
+        }
+    }
+    // The lockfiles as they are now: the dry runs leave them so.
+    let locks = LockSnapshot::take(
+        groups.iter().filter(|g| g.kind == PackageKind::Cargo).map(|g| g.ws_root.as_path()),
+    );
     // An execute publishes commits, never a working tree.
     if a.execute {
         let mut refused = Vec::new();
         for g in &groups {
             for &i in &g.crates {
                 let c = &chain.crates[i];
-                match dirty(&c.repo_dir, &c.dir) {
+                match blockers(c, g.custom.is_some()).await {
                     Ok(d) if !d.is_empty() => refused.push(format!("{} ({}): {}", c.name, c.repo, d.join(", "))),
                     Ok(_) => {}
                     Err(e) => refused.push(format!("{}: {e}", c.name)),
@@ -580,20 +804,24 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         return err(&tx, "io", format!("{}: {e}", a.log_dir.display()));
     }
     // 1. Every group's dry run, each against the others' checkouts.
-    let to_publish: Vec<(String, PathBuf, PathBuf, PackageKind)> = groups
+    let to_publish: Vec<(String, PathBuf, PackageKind)> = groups
         .iter()
         .flat_map(|g| g.crates.iter().map(|&i| {
             let c = &chain.crates[i];
-            (c.name.clone(), c.dir.clone(), c.ws_root.clone(), c.kind)
+            (c.name.clone(), c.dir.clone(), c.kind)
         }))
         .collect();
     let mut verified = 0u32;
     let mut failed: Vec<String> = Vec::new();
     for g in &groups {
+        // HYPERFORGE-62 (4): every other group's crates, those of this
+        // group's own cargo workspace too (an earlier group of it is not on
+        // crates.io yet). Only the group's own crates resolve without it.
+        let own: Vec<&str> = g.crates.iter().map(|&i| chain.crates[i].name.as_str()).collect();
         let patch: Vec<(String, PathBuf)> = to_publish
             .iter()
-            .filter(|(_, _, ws, kind)| *kind == PackageKind::Cargo && *ws != g.ws_root)
-            .map(|(n, d, _, _)| (n.clone(), d.clone()))
+            .filter(|(n, _, kind)| *kind == PackageKind::Cargo && !own.contains(&n.as_str()))
+            .map(|(n, d, _)| (n.clone(), d.clone()))
             .collect();
         let patch_file = if patch.is_empty() || g.kind == PackageKind::Cabal {
             None
@@ -611,12 +839,34 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
         }
     }
     let all_names: Vec<String> = to_publish.iter().map(|(n, ..)| n.clone()).collect();
+    let unrestored = locks.restore();
+    if !unrestored.is_empty() {
+        err(&tx, "io", format!("a lockfile the dry run moved was not put back: {}", unrestored.join("; ")));
+        return send(&tx, summary(a.execute, planned, skipped, verified, vec![], vec![], all_names));
+    }
     if !failed.is_empty() {
         err(&tx, "dry_run_failed", format!("nothing published: the dry run failed for {}", failed.join(", ")));
         return send(&tx, summary(a.execute, planned, skipped, verified, vec![], failed, all_names));
     }
     if !a.execute {
         return send(&tx, summary(false, planned, skipped, verified, vec![], vec![], all_names));
+    }
+    // HYPERFORGE-62 (3): an untracked file a Cabal sdist carries would ship
+    // uncommitted. The dry run built the tarball; nothing is uploaded yet.
+    let mut refused = Vec::new();
+    for g in groups.iter().filter(|g| g.kind == PackageKind::Cabal) {
+        for &i in &g.crates {
+            let c = &chain.crates[i];
+            match untracked_in_sdist(c, &sdist_tarball(c, &a.log_dir)) {
+                Ok(u) if !u.is_empty() => refused.push(format!("{} ({}): {}", c.name, c.repo, u.join(", "))),
+                Ok(_) => {}
+                Err(e) => refused.push(format!("{}: {e}", c.name)),
+            }
+        }
+    }
+    if !refused.is_empty() {
+        err(&tx, "dirty", format!("nothing published — the sdist carries uncommitted files: {}", refused.join("; ")));
+        return send(&tx, summary(true, planned, skipped, verified, vec![], vec![], all_names));
     }
     // 2. Publish, group by group, in order; stop at the first failure.
     let has = |kind| groups.iter().any(|g| g.kind == kind);
@@ -693,6 +943,77 @@ const fn summary(
     BuildEvent::PublishSummary { execute, planned, skipped, verified, published, failed, not_published }
 }
 
+/// Where a Cabal package's dry run leaves its sdist, and its publish takes it.
+fn sdist_tarball(c: &CrateNode, log_dir: &Path) -> PathBuf {
+    log_dir.join("sdist").join(format!("{}-{}.tar.gz", c.name, c.version))
+}
+
+/// HYPERFORGE-62 (5): what the run's packages need from the workspace that
+/// is neither in the run nor on its registry at a version the requirement
+/// takes. `context` is where dependencies are looked up (the workspace).
+async fn missing_dependencies(
+    chain: &Chain,
+    context: &Chain,
+    groups: &[Group],
+    registry: &Registries,
+) -> Result<Vec<String>, String> {
+    let in_run: Vec<(PackageKind, &str)> = groups
+        .iter()
+        .flat_map(|g| &g.crates)
+        .map(|&i| (chain.crates[i].kind, chain.crates[i].name.as_str()))
+        .collect();
+    let mut held: HashMap<(String, bool), Vec<Published>> = HashMap::new();
+    let mut missing = Vec::new();
+    for &i in groups.iter().flat_map(|g| &g.crates) {
+        let c = &chain.crates[i];
+        for d in &c.deps {
+            if d.kind == chain::DepKind::Dev || d.package == c.name {
+                continue;
+            }
+            // A cargo dependency with no version cannot be published at all;
+            // cargo's dry run says so.
+            if c.kind == PackageKind::Cargo && d.req.is_none() {
+                continue;
+            }
+            let wanted = (c.kind, d.package.as_str());
+            let Some(dep) = context.crates.iter().find(|x| (x.kind, x.name.as_str()) == wanted) else { continue };
+            if !dep.publish || in_run.contains(&(dep.kind, dep.name.as_str())) {
+                continue;
+            }
+            let key = (dep.name.clone(), dep.kind == PackageKind::Cabal);
+            if !held.contains_key(&key) {
+                let p = registry.published(dep).await.map_err(|e| format!("{}: {e}", dep.name))?;
+                held.insert(key.clone(), p);
+            }
+            let published = &held[&key];
+            let takes = |v: &str| match (c.kind, d.req.as_deref()) {
+                (_, None) => true,
+                (PackageKind::Cargo, Some(r)) => semver::VersionReq::parse(r)
+                    .ok()
+                    .zip(semver::Version::parse(v).ok())
+                    .is_some_and(|(r, v)| r.matches(&v)),
+                // A range this reader cannot read: the local version must be held.
+                (PackageKind::Cabal, Some(r)) => {
+                    crate::v5::build::cabal::range_matches(r, v).unwrap_or(v == dep.version)
+                }
+            };
+            if !published.iter().any(|p| !p.yanked && takes(&p.version)) {
+                missing.push(format!(
+                    "{} needs {} {}, which {} does not hold ({} {} is in {}, not in this run)",
+                    c.name,
+                    dep.name,
+                    d.req.as_deref().unwrap_or("(any version)"),
+                    dep.kind.registry(),
+                    dep.name,
+                    dep.version,
+                    dep.repo,
+                ));
+            }
+        }
+    }
+    Ok(missing)
+}
+
 /// A Cabal group's commands. The dry run is `cabal check` then `cabal sdist`
 /// into the run's dir; the publish uploads that tarball. Returns the
 /// commands, what to show for them, the tarball the phase must leave, and
@@ -704,7 +1025,7 @@ fn cabal_steps(
     log_dir: &Path,
 ) -> std::io::Result<(Vec<tokio::process::Command>, String, PathBuf, Option<tempfile::NamedTempFile>)> {
     let out = log_dir.join("sdist");
-    let tarball = out.join(format!("{}-{}.tar.gz", c.name, c.version));
+    let tarball = sdist_tarball(c, log_dir);
     if execute {
         let config = token.map(HackageClient::token_config).transpose()?;
         let upload = HackageClient::upload_command(

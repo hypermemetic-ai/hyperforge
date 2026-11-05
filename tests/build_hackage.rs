@@ -32,8 +32,10 @@ case "$1" in
       if [ "$1" = "-o" ]; then out="$2"; fi
       shift
     done
-    mkdir -p "$out"
-    echo tarball > "$out/$name-$version.tar.gz"
+    mkdir -p "$out/.stage/$name-$version"
+    cp -R ./*.cabal src "$out/.stage/$name-$version/"
+    tar -czf "$out/$name-$version.tar.gz" -C "$out/.stage" "$name-$version"
+    rm -rf "$out/.stage"
     echo 'Wrote tarball sdist to'
     echo "$out/$name-$version.tar.gz"
     ;;
@@ -47,6 +49,16 @@ esac
 "#;
 
 const FAKE_CARGO: &str = r#"#!/bin/sh
+# `cargo package --list`: what git would hand cargo (tracked and untracked,
+# not ignored), from the manifest's directory. Not logged.
+if [ "$1" = package ]; then
+  for a in "$@"; do
+    if [ "$prev" = "--manifest-path" ]; then cd "$(dirname "$a")" || exit 1; fi
+    prev="$a"
+  done
+  git ls-files --cached --others --exclude-standard
+  exit 0
+fi
 printf 'cargo %s\n' "$*" >> ../fake-tool.log
 printf 'cargo-token=%s\n' "${CARGO_REGISTRY_TOKEN:+set}" >> ../fake-tool.log
 if [ -e ../fail-cargo ]; then echo 'cargo refused by the fake' >&2; exit 1; fi
@@ -478,7 +490,7 @@ async fn a_mixed_workspace_keeps_its_cargo_groups() {
 #[tokio::test]
 async fn execute_refuses_uncommitted_changes() {
     let fx = fixture(|_| vec![]);
-    write(&fx.ws.join("proto/src/Extra.hs"), "module Extra where\n");
+    write(&fx.ws.join("proto/src/Lib.hs"), "module Lib where\n-- edited\n");
     let ev = fx.call("build.publish", json!({"name": "w", "include": ["hf26-synapse"], "execute": true})).await;
     let e = of_type(&ev, "error");
     assert_eq!(e[0]["code"], "dirty", "{ev:#?}");
@@ -488,6 +500,100 @@ async fn execute_refuses_uncommitted_changes() {
     // A dry run goes ahead, as for cargo.
     let ev = fx.call("build.publish", json!({"name": "w", "include": ["hf26-synapse"]})).await;
     assert_eq!(of_type(&ev, "publish_summary")[0]["verified"], 2, "{ev:#?}");
+}
+
+/// HYPERFORGE-62 (3): for Hackage, an untracked file blocks only when the
+/// sdist carries it (`.menger/`, `cabal.project.local` never ship).
+#[tokio::test]
+async fn untracked_files_block_a_cabal_publish_only_when_the_sdist_ships_them() {
+    let fx = fixture(|_| vec![]);
+    write(&fx.ws.join("proto/.menger/notes.md"), "local\n");
+    write(&fx.ws.join("proto/cabal.project.local"), "tests: True\n");
+    write(&fx.ws.join("proto/src/Extra.hs"), "module Extra where\n");
+    // The fake's sdist ships src/: Extra.hs is caught after the dry runs,
+    // before any upload.
+    let ev = fx.call("build.publish", json!({"name": "w", "include": ["hf26-proto"], "execute": true})).await;
+    let e = of_type(&ev, "error");
+    assert_eq!(e[0]["code"], "dirty", "{ev:#?}");
+    let msg = e[0]["message"].as_str().unwrap();
+    assert!(msg.contains("src/Extra.hs"), "{msg}");
+    assert!(!msg.contains(".menger") && !msg.contains("cabal.project.local"), "{msg}");
+    assert_eq!(fx.tool_lines("cabal sdist").len(), 1, "{}", fx.tool_log());
+    assert!(fx.tool_lines("cabal upload").is_empty(), "{}", fx.tool_log());
+    // Without it, the files the sdist does not carry are no matter.
+    std::fs::remove_file(fx.ws.join("proto/src/Extra.hs")).unwrap();
+    let ev = fx.call("build.publish", json!({"name": "w", "include": ["hf26-proto"], "execute": true})).await;
+    assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
+    assert_eq!(of_type(&ev, "publish_summary")[0]["published"], json!(["hf26-proto"]));
+    assert_eq!(fx.tool_lines("cabal upload").len(), 1);
+}
+
+/// HYPERFORGE-62 (1): hyperforge's own `.hyperforge/config.toml`, rewritten
+/// (an org move), is committed before an execute rather than refused; a dry
+/// run only says it will be.
+#[tokio::test]
+async fn a_changed_hyperforge_config_is_committed_not_refused() {
+    let fx = fixture(rust_repos);
+    let rusty = fx.ws.join("rusty");
+    write(&rusty.join(".hyperforge/config.toml"), "repo_name = \"rusty\"\norg = \"o\"\n");
+    git(&rusty, &["add", "-A"]);
+    git(&rusty, &["commit", "-q", "-m", "hf config"]);
+    write(&rusty.join(".hyperforge/config.toml"), "repo_name = \"rusty\"\norg = \"o2\"\n");
+    let params = |execute: bool| json!({"name": "w", "include": ["hf26-a"], "closure": false, "execute": execute});
+    let ev = fx.call("build.publish", params(false)).await;
+    assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
+    assert!(of_type(&ev, "chain_note").iter().any(|n| n["message"].as_str().unwrap().contains("an execute commits it first")), "{ev:#?}");
+    assert_eq!(git(&rusty, &["status", "--porcelain"]), " M .hyperforge/config.toml\n");
+    // Another uncommitted file cargo would package still refuses.
+    write(&rusty.join("src/extra.rs"), "");
+    let ev = fx.call("build.publish", params(true)).await;
+    let e = of_type(&ev, "error");
+    assert_eq!(e[0]["code"], "dirty", "{ev:#?}");
+    assert!(e[0]["message"].as_str().unwrap().contains("src/extra.rs"), "{ev:#?}");
+    assert!(!e[0]["message"].as_str().unwrap().contains(".hyperforge"), "{ev:#?}");
+    std::fs::remove_file(rusty.join("src/extra.rs")).unwrap();
+    // Only hyperforge's file: committed, then published.
+    let ev = fx.call("build.publish", params(true)).await;
+    assert!(of_type(&ev, "error").is_empty(), "{ev:#?}");
+    assert_eq!(git(&rusty, &["status", "--porcelain"]), "");
+    assert_eq!(git(&rusty, &["log", "-1", "--format=%s"]).trim(), "chore: .hyperforge/config.toml (hyperforge build publish)");
+    assert!(git(&rusty, &["show", "HEAD:.hyperforge/config.toml"]).contains("o2"));
+    assert_eq!(of_type(&ev, "publish_summary")[0]["published"], json!(["hf26-a"]));
+    assert!(fx.tool_log().contains("cargo publish -p hf26-a\n"), "{}", fx.tool_log());
+}
+
+/// HYPERFORGE-62 (5): Cabal packages publish as one chain, in `build-depends`
+/// order, and one that fails stops the rest; the one-repo form refuses a
+/// package whose workspace dependency Hackage does not hold.
+#[tokio::test]
+async fn a_cabal_chain_publishes_in_order_and_stops_at_a_failure() {
+    let fx = fixture(|ws| {
+        cabal_repo(ws, "cc", "hf26-cc", "0.4.0", "    hf26-synapse >= 3.0 && < 4,\n    hf26-proto >= 0.5 && < 0.6");
+        vec!["cc"]
+    });
+    // One repo, alone: hf26-synapse is on no registry, so nothing goes up.
+    let ev = fx.call("build.publish", json!({"org": "o", "name": "cc", "channel": "hackage", "execute": true})).await;
+    let e = of_type(&ev, "error");
+    assert_eq!(e[0]["code"], "unpublished_dependency", "{ev:#?}");
+    let msg = e[0]["message"].as_str().unwrap();
+    assert!(msg.contains("hf26-cc needs hf26-synapse >= 3.0 && < 4"), "{msg}");
+    assert!(msg.contains("build publish --name w --include hf26-cc"), "{msg}");
+    // hf26-proto 0.5.2.0, which Hackage holds, satisfies its range.
+    assert!(!msg.contains("needs hf26-proto"), "{msg}");
+    assert!(fx.tool_log().is_empty(), "{}", fx.tool_log());
+    // The chain: proto, synapse, cc — synapse's upload fails, cc never goes.
+    write(&fx.ws.join("fail-upload-hf26-synapse"), "");
+    let ev = fx.call("build.publish", json!({"name": "w", "include": ["hf26-cc"], "execute": true})).await;
+    let order: Vec<String> = plan(&ev).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(order, ["hf26-proto", "hf26-synapse", "hf26-cc"], "{ev:#?}");
+    assert_eq!(of_type(&ev, "error")[0]["code"], "half_published", "{ev:#?}");
+    let uploads = fx.tool_lines("cabal upload");
+    assert_eq!(uploads.len(), 2, "{uploads:?}");
+    assert!(uploads[0].contains("hf26-proto") && uploads[1].contains("hf26-synapse"), "{uploads:?}");
+    let s = of_type(&ev, "publish_summary")[0];
+    assert_eq!(s["published"], json!(["hf26-proto"]));
+    assert_eq!(s["not_published"], json!(["hf26-synapse", "hf26-cc"]));
+    assert_eq!(git(&fx.ws.join("cc"), &["tag", "--list"]), "");
 }
 
 #[tokio::test]
