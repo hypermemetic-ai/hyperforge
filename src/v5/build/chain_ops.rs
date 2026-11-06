@@ -54,8 +54,9 @@ pub(crate) fn dirty(repo_dir: &Path, path: &Path) -> Result<Vec<String>, String>
 }
 
 /// hyperforge's own file in a repo, which hyperforge itself rewrites (an
-/// org move, `repo_name`).
-const HF_CONFIG: &str = ".hyperforge/config.toml";
+/// org move, `repo_name`). HYPERFORGE-64: one rule for it, shared with pull
+/// and every writer, in `ops::git`.
+const HF_CONFIG: &str = crate::v5::ops::git::OWN_CONFIG;
 
 /// One `git status` entry: its `XY` code and its path from the repo root.
 #[derive(Debug, Clone)]
@@ -113,8 +114,7 @@ fn under(repo_dir: &Path, dir: &Path, path: &str) -> Option<String> {
 /// changed? hyperforge rewrites it (the org move, `repo_name`); `cargo
 /// package` ships it, so cargo's own check would refuse it as well.
 fn hf_config_changed(repo_dir: &Path) -> bool {
-    status(repo_dir, &repo_dir.join(HF_CONFIG), false)
-        .is_ok_and(|s| s.iter().any(|e| !e.untracked() && !e.deleted()))
+    crate::v5::ops::git::own_config_changed(repo_dir)
 }
 
 /// The files `cargo package` ships for a crate (paths in the package), by
@@ -773,9 +773,8 @@ pub async fn publish(tx: Tx, a: PublishArgs) {
             note(&tx, format!("{repo}: {HF_CONFIG} has uncommitted changes; an execute commits it first"));
             continue;
         }
-        let msg = format!("chore: {HF_CONFIG} (hyperforge build publish)");
-        match git(dir, &["commit", "-q", "-m", &msg, "--", HF_CONFIG]).and_then(|_| git(dir, &["rev-parse", "--short", "HEAD"])) {
-            Ok(h) => note(&tx, format!("{repo}: committed {HF_CONFIG} ({}) before publishing", h.trim())),
+        match crate::v5::ops::git::commit_own_config(dir, "build publish") {
+            Ok(h) => note(&tx, format!("{repo}: committed {HF_CONFIG} ({}) before publishing", h.unwrap_or_default())),
             Err(e) => return err(&tx, "git", format!("{repo}: committing {HF_CONFIG}: {e}")),
         }
     }

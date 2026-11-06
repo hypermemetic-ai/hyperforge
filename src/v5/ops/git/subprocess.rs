@@ -46,19 +46,33 @@ pub(super) fn fetch(dir: &Path, remote: Option<&str>) -> Result<(), GitError> {
 
 pub(super) fn pull_ff(dir: &Path, remote: &str, branch: &str) -> Result<(), GitError> {
     ensure_git_repo(dir)?;
-    if is_dirty(dir)? {
+    // HYPERFORGE-64 (1): hyperforge's own `.hyperforge/config.toml`, tracked
+    // and changed, is not somebody's work in progress. It rides through the
+    // fast-forward (git itself refuses if the incoming commits touch it) and
+    // is committed after, as its writer would have done.
+    let failed = |stderr: String| GitError::CommandFailed { code: -1, stderr };
+    let own = super::own_config_changed(dir);
+    let dirty = if own { !super::changes_besides_own_config(dir).map_err(failed)?.is_empty() } else { is_dirty(dir)? };
+    if dirty {
         return Err(GitError::DirtyTree(dir.display().to_string()));
     }
     match run_git(
         None,
-        &["-C", dir.to_str().unwrap_or(""), "pull", "--ff-only", remote, branch],
+        // `--no-rebase`: with a user's `pull.rebase = true`, `--ff-only` alone
+        // still takes the rebase road, which refuses any changed file
+        // (HYPERFORGE-64).
+        &["-C", dir.to_str().unwrap_or(""), "pull", "--ff-only", "--no-rebase", remote, branch],
     ) {
-        Ok(()) => Ok(()),
+        Ok(()) => {}
         Err(GitError::CommandFailed { stderr, .. }) if stderr.contains("Not possible to fast-forward") => {
-            Err(GitError::NonFastForward)
+            return Err(GitError::NonFastForward);
         }
-        Err(e) => Err(e),
+        Err(e) => return Err(e),
     }
+    if own {
+        super::commit_own_config(dir, "pull").map_err(failed)?;
+    }
+    Ok(())
 }
 
 pub(super) fn push_refs(dir: &Path, remote: &str, branch: Option<&str>) -> Result<(), GitError> {

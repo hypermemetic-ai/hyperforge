@@ -151,6 +151,14 @@ pub enum WorkspacesEvent {
         total: u32,
         ok: u32,
         errored: u32,
+        /// HYPERFORGE-64 (3): git clones directly under the workspace path
+        /// that are not members (a `pull` names them; nothing is done to
+        /// them). Linked worktrees of members are not counted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        not_members: Vec<String>,
+        /// A sentence for a reader: what `not_members` means.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     /// V5PARITY-2: per-dir result during `workspaces.discover`.
     /// `status` is `matched` (dir's origin resolves to a known repo),
@@ -1821,9 +1829,13 @@ impl WorkspacesService {
             let total = u32::try_from(ws.repos.len()).unwrap_or(u32::MAX);
             let mut ok = 0u32; let mut errored = 0u32;
             for ctx in member_ctxs(&ws, &loaded, &ws_path) {
-                let result = ctx.repo.and_then(|r| r.canonical_remote())
-                    .ok_or_else(|| "no remotes".to_string())
-                    .and_then(|r| crate::v5::ops::git::clone_repo(r.url.as_str(), &ctx.dir).map_err(|e| e.to_string()));
+                let url = ctx.repo.and_then(|r| r.canonical_remote()).map(|r| r.url.as_str().to_string());
+                let dir = ctx.dir.clone();
+                // HYPERFORGE-64 (2): git off the runtime, so the socket keeps answering.
+                let result = crate::v5::ops::git::off_runtime(move || {
+                    url.ok_or_else(|| "no remotes".to_string())
+                        .and_then(|u| crate::v5::ops::git::clone_repo(&u, &dir).map_err(|e| e.to_string()))
+                }).await;
                 match result {
                     Ok(()) => { ok += 1; yield member_ok(&ctx.reference, "clone"); }
                     Err(e) => { errored += 1; yield member_err(&ctx.reference, "clone", e); }
@@ -1831,7 +1843,7 @@ impl WorkspacesService {
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: "clone".into(),
-                total, ok, errored,
+                total, ok, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -1850,14 +1862,16 @@ impl WorkspacesService {
             let total = u32::try_from(ws.repos.len()).unwrap_or(u32::MAX);
             let mut ok = 0u32; let mut errored = 0u32;
             for ctx in member_ctxs(&ws, &loaded, &ws_path) {
-                match crate::v5::ops::git::fetch(&ctx.dir, None) {
+                let dir = ctx.dir.clone();
+                // HYPERFORGE-64 (2): git off the runtime, so the socket keeps answering.
+                match crate::v5::ops::git::off_runtime(move || crate::v5::ops::git::fetch(&dir, None)).await {
                     Ok(()) => { ok += 1; yield member_ok(&ctx.reference, "fetch"); }
                     Err(e) => { errored += 1; yield member_err(&ctx.reference, "fetch", e.to_string()); }
                 }
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: "fetch".into(),
-                total, ok, errored,
+                total, ok, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -1875,17 +1889,30 @@ impl WorkspacesService {
             let ws_path = std::path::PathBuf::from(ws.path.as_str());
             let total = u32::try_from(ws.repos.len()).unwrap_or(u32::MAX);
             let mut ok = 0u32; let mut errored = 0u32;
+            let mut member_dirs = Vec::new();
             for ctx in member_ctxs(&ws, &loaded, &ws_path) {
-                let branch = crate::v5::ops::git::status(&ctx.dir).ok()
-                    .and_then(|s| s.branch).unwrap_or_else(|| "main".into());
-                match crate::v5::ops::git::pull_ff(&ctx.dir, "origin", &branch) {
+                member_dirs.push(ctx.dir.clone());
+                let dir = ctx.dir.clone();
+                // HYPERFORGE-64 (2): each member's git runs off the async
+                // runtime. Inline, a pull over many members held one worker
+                // for the whole run and the socket stopped answering pings.
+                let pulled = crate::v5::ops::git::off_runtime(move || {
+                    let branch = crate::v5::ops::git::status(&dir).ok()
+                        .and_then(|s| s.branch).unwrap_or_else(|| "main".into());
+                    crate::v5::ops::git::pull_ff(&dir, "origin", &branch)
+                }).await;
+                match pulled {
                     Ok(()) => { ok += 1; yield member_ok(&ctx.reference, "pull"); }
                     Err(e) => { errored += 1; yield member_err(&ctx.reference, "pull", e.to_string()); }
                 }
             }
+            // HYPERFORGE-64 (3): a clone under the path that is not a member
+            // was skipped without a word; name it.
+            let not_members = checkouts_not_members(&ws_path, &member_dirs);
+            let note = stray_note(&ws_path, &not_members);
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: "pull".into(),
-                total, ok, errored,
+                total, ok, errored, not_members, note,
             };
         }
     }
@@ -1904,14 +1931,16 @@ impl WorkspacesService {
             let total = u32::try_from(ws.repos.len()).unwrap_or(u32::MAX);
             let mut ok = 0u32; let mut errored = 0u32;
             for ctx in member_ctxs(&ws, &loaded, &ws_path) {
-                match crate::v5::ops::git::push_refs(&ctx.dir, "origin", None) {
+                let dir = ctx.dir.clone();
+                // HYPERFORGE-64 (2): git off the runtime, so the socket keeps answering.
+                match crate::v5::ops::git::off_runtime(move || crate::v5::ops::git::push_refs(&dir, "origin", None)).await {
                     Ok(()) => { ok += 1; yield member_ok(&ctx.reference, "push"); }
                     Err(e) => { errored += 1; yield member_err(&ctx.reference, "push", e.to_string()); }
                 }
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: "push".into(),
-                total, ok, errored,
+                total, ok, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -1992,7 +2021,7 @@ impl WorkspacesService {
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: "checkout".into(),
-                total, ok, errored,
+                total, ok, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -2068,7 +2097,7 @@ impl WorkspacesService {
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: op.into(),
-                total: u32::try_from(repos.len()).unwrap_or(u32::MAX), ok, errored,
+                total: u32::try_from(repos.len()).unwrap_or(u32::MAX), ok, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -2188,7 +2217,7 @@ impl WorkspacesService {
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: "commit".into(),
-                total, ok: ok + skipped, errored,
+                total, ok: ok + skipped, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -2231,7 +2260,7 @@ impl WorkspacesService {
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws.name.as_str().to_string(), op: "tag".into(),
-                total, ok, errored,
+                total, ok, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -2383,7 +2412,7 @@ impl WorkspacesService {
                 yield WorkspacesEvent::WorkspaceGitSummary {
                     name: ws_name, op: "from_org".into(),
                     total: u32::try_from(candidates.len()).unwrap_or(u32::MAX),
-                    ok: 0, errored: 0,
+                    ok: 0, errored: 0, not_members: Vec::new(), note: None,
                 };
                 return;
             }
@@ -2399,7 +2428,10 @@ impl WorkspacesService {
                     name: repo.name.as_str().to_string(),
                 };
                 let dir = ws_path.join(repo.name.as_str());
-                let result: Result<(), String> = (|| {
+                let url = repo.canonical_remote().map(|r| r.url.as_str().to_string());
+                let (ssh_cmd, key_path) = (ssh_cmd.clone(), key_path.clone());
+                // HYPERFORGE-64 (2): git off the runtime, so the socket keeps answering.
+                let result: Result<(), String> = crate::v5::ops::git::off_runtime(move || {
                     if dir.exists() {
                         if !do_update { return Ok(()); }
                         // pull on existing
@@ -2408,8 +2440,7 @@ impl WorkspacesService {
                         crate::v5::ops::git::pull_ff(&dir, "origin", &branch)
                             .map_err(|e| e.to_string())
                     } else {
-                        let url = repo.canonical_remote().map(|r| r.url.as_str())
-                            .ok_or_else(|| "no remote".to_string())?;
+                        let url = url.as_deref().ok_or_else(|| "no remote".to_string())?;
                         let env: Vec<(&str, &str)> = match ssh_cmd.as_deref() {
                             Some(s) => vec![("GIT_SSH_COMMAND", s)],
                             None => Vec::new(),
@@ -2427,7 +2458,7 @@ impl WorkspacesService {
                         }
                         Ok(())
                     }
-                })();
+                }).await;
                 match result {
                     Ok(()) => { ok += 1; yield member_ok(&wire, "from_org"); }
                     Err(e) => { errored += 1; yield member_err(&wire, "from_org", e); }
@@ -2435,7 +2466,7 @@ impl WorkspacesService {
             }
             yield WorkspacesEvent::WorkspaceGitSummary {
                 name: ws_name, op: "from_org".into(),
-                total, ok, errored,
+                total, ok, errored, not_members: Vec::new(), note: None,
             };
         }
     }
@@ -3184,6 +3215,37 @@ fn member_ctxs<'a>(
             dir,
         })
     })
+}
+
+/// HYPERFORGE-64 (3): the git clones directly under `ws_path` that are not
+/// members, by directory name, sorted. A clone has a `.git` directory; a
+/// linked worktree (a `.git` file) belongs to its repo and is not counted.
+fn checkouts_not_members(ws_path: &std::path::Path, member_dirs: &[std::path::PathBuf]) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(ws_path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join(".git").is_dir() && !member_dirs.iter().any(|m| m == p))
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The summary's sentence for [`checkouts_not_members`], if any.
+fn stray_note(ws_path: &std::path::Path, strays: &[String]) -> Option<String> {
+    match strays.len() {
+        0 => None,
+        1 => Some(format!(
+            "1 git checkout under {} is not a member and was not pulled: {} (workspaces add_repo to include it)",
+            ws_path.display(), strays[0],
+        )),
+        n => Some(format!(
+            "{n} git checkouts under {} are not members and were not pulled: {} (workspaces add_repo to include them)",
+            ws_path.display(), strays.join(", "),
+        )),
+    }
 }
 
 /// A ticket id is safe as a branch and a folder name.

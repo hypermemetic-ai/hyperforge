@@ -87,6 +87,8 @@ tempfile = "3"
 git2 = { version = "0.20.4", features = ["vendored-libgit2", "vendored-openssl"] }
 
 [dev-dependencies]
+# HYPERFORGE-64: a raw WebSocket client, to ping the daemon mid-call.
+tokio-tungstenite = { version = "0.30", features = ["connect"] }
 
 # --- v5 integration test tiers ---
 # Tier 1 (offline) runs by default. Tier 2 (live forge) and Tier 3
