@@ -2495,7 +2495,9 @@ impl ReposService {
                 yield validation_event("missing required parameter 'path'"); return;
             }
             let dir = std::path::PathBuf::from(&path);
-            match crate::v5::ops::git::fetch(&dir, remote.as_deref()) {
+            // HYPERFORGE-64 (2): git off the runtime, so the socket keeps answering.
+            let fetched = { let d = dir.clone(); let r = remote.clone(); crate::v5::ops::git::off_runtime(move || crate::v5::ops::git::fetch(&d, r.as_deref())).await };
+            match fetched {
                 Ok(()) => yield RepoEvent::FetchDone {
                     reference: RepoRefWire { org: String::new(), name: String::new() },
                     remote,
@@ -2535,7 +2537,9 @@ impl ReposService {
                     }; return; }
                 },
             };
-            match crate::v5::ops::git::pull_ff(&dir, &r, &b) {
+            // HYPERFORGE-64 (2): git off the runtime, so the socket keeps answering.
+            let pulled = { let (d, r, b) = (dir.clone(), r.clone(), b.clone()); crate::v5::ops::git::off_runtime(move || crate::v5::ops::git::pull_ff(&d, &r, &b)).await };
+            match pulled {
                 Ok(()) => yield RepoEvent::PullDone {
                     reference: RepoRefWire { org: String::new(), name: String::new() },
                     remote: r,
@@ -2567,7 +2571,9 @@ impl ReposService {
             }
             let dir = std::path::PathBuf::from(&path);
             let r = remote.unwrap_or_else(|| "origin".into());
-            match crate::v5::ops::git::push_refs(&dir, &r, branch.as_deref()) {
+            // HYPERFORGE-64 (2): git off the runtime, so the socket keeps answering.
+            let pushed = { let (d, r, b) = (dir.clone(), r.clone(), branch.clone()); crate::v5::ops::git::off_runtime(move || crate::v5::ops::git::push_refs(&d, &r, b.as_deref())).await };
+            match pushed {
                 Ok(()) => yield RepoEvent::PushRefsDone {
                     reference: RepoRefWire { org: String::new(), name: String::new() },
                     remote: r,

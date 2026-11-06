@@ -51,8 +51,9 @@ pub fn read_hyperforge_config(dir: &Path) -> Result<Option<HyperforgeRepoConfig>
     Ok(Some(cfg))
 }
 
-/// Write a `.hyperforge/config.toml` atomically. Fails if a file
-/// exists at the target and `force` is false.
+/// Write a `.hyperforge/config.toml` atomically, and commit it when the
+/// repo tracks it and the write changed it (HYPERFORGE-64). Fails if a
+/// file exists at the target and `force` is false.
 pub fn write_hyperforge_config(
     dir: &Path,
     cfg: &HyperforgeRepoConfig,
@@ -71,6 +72,14 @@ pub fn write_hyperforge_config(
     let tmp = parent.join(".hyperforge-config.toml.tmp");
     std::fs::write(&tmp, body).map_err(|e| InitError::Io(e.to_string()))?;
     std::fs::rename(&tmp, &path).map_err(|e| InitError::Io(e.to_string()))?;
+    // HYPERFORGE-64 (1): a tracked config that this write changed is
+    // committed by itself, so hyperforge never leaves its own file dirty
+    // (it blocked `workspaces pull` and `build publish`). Best effort: a
+    // failed commit (a merge in progress, a refusing hook) leaves the file
+    // written and changed, which the next pull or publish commits.
+    if let Err(e) = crate::v5::ops::git::commit_own_config(dir, "rewrote it") {
+        tracing::warn!(dir = %dir.display(), error = %e, "wrote .hyperforge/config.toml; committing it failed");
+    }
     Ok(path)
 }
 

@@ -130,6 +130,90 @@ pub fn run_in(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+// ===================================================================
+// HYPERFORGE-64: hyperforge's own `.hyperforge/config.toml`.
+// ===================================================================
+
+/// hyperforge's own per-repo file, which hyperforge itself rewrites (an org
+/// move, `repo_name`, `forges`). One rule holds for it everywhere: when it is
+/// tracked and hyperforge changes it, the change is committed by itself, so
+/// it never shows as somebody's uncommitted work. The writer commits
+/// ([`crate::v5::ops::fs::write_hyperforge_config`]); a pull or a publish
+/// that meets it changed (an older hyperforge, a hand edit) commits it too.
+pub const OWN_CONFIG: &str = ".hyperforge/config.toml";
+
+/// `git status` entries (`XY`, path) in `dir`, every untracked file listed
+/// by itself. Paths are unquoted (`-z`).
+fn status_entries(dir: &Path) -> Result<Vec<(String, String)>, String> {
+    let out = run_in(dir, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+    let mut entries = Vec::new();
+    let mut parts = out.split('\0');
+    while let Some(e) = parts.next() {
+        if e.len() < 4 {
+            continue;
+        }
+        let xy = e[..2].to_string();
+        // A rename or copy: `XY new\0old\0`.
+        if xy.starts_with(['R', 'C']) {
+            parts.next();
+        }
+        entries.push((xy, e[3..].to_string()));
+    }
+    Ok(entries)
+}
+
+/// A tracked, changed (not deleted) `.hyperforge/config.toml` entry.
+fn is_own_config_change(xy: &str, path: &str) -> bool {
+    path == OWN_CONFIG && xy != "??" && !xy.contains('D')
+}
+
+/// Is `.hyperforge/config.toml` tracked in `dir` and changed (staged or
+/// not, not deleted)? `false` outside a git repo.
+#[must_use]
+pub fn own_config_changed(dir: &Path) -> bool {
+    status_entries(dir).is_ok_and(|es| es.iter().any(|(xy, p)| is_own_config_change(xy, p)))
+}
+
+/// The uncommitted changes in `dir` (`XY path`, untracked included) other
+/// than a tracked, changed `.hyperforge/config.toml`.
+pub fn changes_besides_own_config(dir: &Path) -> Result<Vec<String>, String> {
+    Ok(status_entries(dir)?
+        .into_iter()
+        .filter(|(xy, p)| !is_own_config_change(xy, p))
+        .map(|(xy, p)| format!("{xy} {p}"))
+        .collect())
+}
+
+/// Commit `.hyperforge/config.toml` by itself when it is tracked and
+/// changed: `chore: .hyperforge/config.toml (hyperforge <by>)`. Anything
+/// else staged stays staged and out of the commit. `Ok(Some(short sha))`
+/// when it committed, `Ok(None)` when there was nothing to commit.
+pub fn commit_own_config(dir: &Path, by: &str) -> Result<Option<String>, String> {
+    if !own_config_changed(dir) {
+        return Ok(None);
+    }
+    let msg = format!("chore: {OWN_CONFIG} (hyperforge {by})");
+    run_in(dir, &["commit", "-q", "-m", &msg, "--only", "--", OWN_CONFIG])?;
+    run_in(dir, &["rev-parse", "--short", "HEAD"]).map(|h| Some(h.trim().to_string()))
+}
+
+/// HYPERFORGE-64 (2): run blocking git (a subprocess, a network round
+/// trip) off the async runtime. A service stream that runs git inline holds
+/// its runtime worker for the whole call without yielding, and the socket's
+/// task, woken by that stream into the same worker's LIFO slot (which no
+/// other worker steals), waits behind it: the connection's answers and its
+/// pongs go out only when the stream next returns `Pending`.
+pub async fn off_runtime<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(v) => v,
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
+    }
+}
+
 /// Create a process for `git`, for callers that stream its stdin.
 #[must_use]
 pub fn git_command() -> std::process::Command {
