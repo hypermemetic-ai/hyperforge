@@ -22,6 +22,9 @@ async fn main() -> anyhow_free::Result {
     let service = Arc::new(DynamicService::new("toy").register(scripted::Scripted::new().server()));
     let server = TransportServer::builder(service, |h| DynamicService::arc_into_rpc_module(h).map_err(Into::into))
         .with_websocket(port)
+        // HYPERFORGE-65: no browser page, and only this port's loopback names.
+        .with_allowed_origins(["https://no-browser.invalid"])
+        .with_allowed_hosts(plexus_transport::host::loopback_hosts(port))
         .without_registry()
         .build()
         .await

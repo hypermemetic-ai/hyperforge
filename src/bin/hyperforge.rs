@@ -140,6 +140,13 @@ async fn main() -> anyhow::Result<()> {
 
     let server = TransportServer::builder(lforge, rpc_converter)
         .with_websocket(args.port)
+        // HYPERFORGE-65: no page has business here — a browser applies no
+        // same-origin rule to a WebSocket. An empty list would admit every
+        // origin; this one matches none, while a client with no `Origin`
+        // (synapse, the tools) proceeds. And only this port's loopback
+        // names: a name rebound to 127.0.0.1 is refused 421.
+        .with_allowed_origins(["https://no-browser.invalid"])
+        .with_allowed_hosts(plexus_transport::host::loopback_hosts(args.port))
         // HYPERFORGE-45: synapse reaches this daemon by port; no registry.
         .without_registry()
         .build()
